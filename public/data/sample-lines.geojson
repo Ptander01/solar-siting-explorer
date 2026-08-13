@@ -1,0 +1,20 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "name": "Sample Line A", "voltage_kv": 345, "owner": "Placeholder Utility Co." },
+      "geometry": { "type": "LineString", "coordinates": [[-97.2, 38.5], [-96.5, 38.9]] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "Sample Line B", "voltage_kv": 138, "owner": "Placeholder Utility Co." },
+      "geometry": { "type": "LineString", "coordinates": [[-96.8, 37.8], [-95.9, 38.2]] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "Sample Line C", "voltage_kv": 500, "owner": "Placeholder Utility Co." },
+      "geometry": { "type": "LineString", "coordinates": [[-96.0, 37.0], [-95.0, 37.6]] }
+    }
+  ]
+}

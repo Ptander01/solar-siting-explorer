@@ -1,0 +1,6 @@
+node_modules/
+dist/
+pipeline/data/
+public/data/*.pmtiles
+.DS_Store
+*.log

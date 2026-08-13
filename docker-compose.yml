@@ -1,0 +1,9 @@
+# Single service for now (M0-M2). Once the Python pipeline (pipeline/) is
+# doing real work at M3+, add a `pipeline` service here — keep it as a
+# separate service, not baked into the frontend image, so the geoprocessing
+# step stays reproducible independent of the frontend build.
+services:
+  web:
+    build: .
+    ports:
+      - "8080:80"
