@@ -72,6 +72,22 @@ WORLDCOVER_SUITABILITY = {
 }
 DEFAULT_LANDCOVER_SCORE = 50  # unmapped/unexpected class codes
 
+# Human-readable labels for the tooltip — same class codes as
+# WORLDCOVER_SUITABILITY above.
+WORLDCOVER_LABELS = {
+    10: "Tree cover",
+    20: "Shrubland",
+    30: "Grassland",
+    40: "Cropland",
+    50: "Built-up",
+    60: "Bare / sparse vegetation",
+    70: "Snow and ice",
+    80: "Permanent water bodies",
+    90: "Herbaceous wetland",
+    95: "Mangroves",
+    100: "Moss and lichen",
+}
+
 
 def compute_slope_score():
     with rasterio.open(DEM_PATH) as src:
@@ -87,7 +103,9 @@ def compute_slope_score():
         slope_deg = np.degrees(np.arctan(np.sqrt(gx**2 + gy**2)))
 
     slope_score = 100 * np.clip((SLOPE_MAX_DEG - slope_deg) / SLOPE_MAX_DEG, 0, 1)
-    return slope_score, transform, crs, shape
+    # Return the raw degrees too — the score alone doesn't tell you *why* a
+    # cell scored the way it did, and that's useful in the map tooltip.
+    return slope_score, slope_deg, transform, crs, shape
 
 
 def get_landcover_score_aligned(ref_transform, ref_crs, ref_shape):
@@ -130,10 +148,23 @@ def get_landcover_score_aligned(ref_transform, ref_crs, ref_shape):
     score = np.full(ref_shape, DEFAULT_LANDCOVER_SCORE, dtype=np.float32)
     for code, value in WORLDCOVER_SUITABILITY.items():
         score[np.round(nlcd_codes) == code] = value
-    return score
+    # Return the raw class codes too, for the same reason as slope_deg above.
+    return score, nlcd_codes
 
 
-def grid_average(score_arr, transform):
+def _dominant_landcover_label(code_block):
+    """Most frequent WorldCover class in a grid cell, as a human-readable
+    label — a cell can span several class codes, so "the score" alone
+    doesn't say what's actually on the ground there."""
+    codes = np.round(code_block).astype(int).ravel()
+    if codes.size == 0:
+        return "Unknown"
+    values, counts = np.unique(codes, return_counts=True)
+    dominant_code = int(values[np.argmax(counts)])
+    return WORLDCOVER_LABELS.get(dominant_code, f"Class {dominant_code}")
+
+
+def grid_average(score_arr, slope_deg_arr, landcover_codes_arr, transform):
     lon_edges = np.linspace(WEST, EAST, GRID_COLS + 1)
     lat_edges = np.linspace(SOUTH, NORTH, GRID_ROWS + 1)
 
@@ -157,9 +188,15 @@ def grid_average(score_arr, transform):
             if np.isnan(mean_score):
                 continue
 
-            rows_out.append(
-                {"score": round(mean_score, 1), "geometry": box(cell_w, cell_s, cell_e, cell_n)}
-            )
+            mean_slope_deg = float(np.nanmean(slope_deg_arr[r0:r1, c0:c1]))
+            landcover_class = _dominant_landcover_label(landcover_codes_arr[r0:r1, c0:c1])
+
+            rows_out.append({
+                "score": round(mean_score, 1),
+                "slope_deg": round(mean_slope_deg, 1),
+                "landcover_class": landcover_class,
+                "geometry": box(cell_w, cell_s, cell_e, cell_n),
+            })
     return rows_out
 
 
@@ -167,12 +204,12 @@ def main():
     if not os.path.exists(DEM_PATH):
         raise SystemExit("Missing data/aoi_dem.tif — run m3_slope_suitability.py first.")
 
-    slope_score, transform, crs, shape = compute_slope_score()
-    landcover_score = get_landcover_score_aligned(transform, crs, shape)
+    slope_score, slope_deg, transform, crs, shape = compute_slope_score()
+    landcover_score, landcover_codes = get_landcover_score_aligned(transform, crs, shape)
 
     combined = SLOPE_WEIGHT * slope_score + LANDCOVER_WEIGHT * landcover_score
 
-    cells = grid_average(combined, transform)
+    cells = grid_average(combined, slope_deg, landcover_codes, transform)
     gdf = gpd.GeoDataFrame(cells, crs=crs)
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
     gdf.to_file(OUTPUT_PATH, driver="GeoJSON")
