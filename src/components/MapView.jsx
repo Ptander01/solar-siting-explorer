@@ -200,8 +200,16 @@ export default function MapView() {
         if (!object) return null
         const activeId = activeRasterLayerRef.current
         const label = activeId ? RASTER_CONFIG[activeId].tooltipLabel : 'Score'
+        const props = object.properties
+        // slope_deg/landcover_class are the raw inputs behind the score —
+        // added by the pipeline alongside the 144x120 grid change. Guarded
+        // with typeof/truthy checks so cached GeoJSON from before that
+        // change (not yet re-run) doesn't show "undefined".
+        const lines = [`${label}: ${props.score}/100`]
+        if (typeof props.slope_deg === 'number') lines.push(`Slope: ${props.slope_deg}°`)
+        if (props.landcover_class) lines.push(`Land cover: ${props.landcover_class}`)
         return {
-          text: `${label}: ${object.properties.score}/100`,
+          html: lines.join('<br/>'),
           style: DECK_TOOLTIP_STYLES[themeRef.current],
         }
       },
