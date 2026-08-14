@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+geopandas
+rasterio
+shapely
+numpy
+pystac-client
+planetary-computer

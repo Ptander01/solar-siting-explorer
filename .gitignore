@@ -4,3 +4,7 @@ pipeline/data/
 public/data/*.pmtiles
 .DS_Store
 *.log
+backend/venv/
+pipeline/venv/
+__pycache__/
+*.pyc
