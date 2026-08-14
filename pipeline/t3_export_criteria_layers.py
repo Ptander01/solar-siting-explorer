@@ -1,35 +1,24 @@
 """
-M5 (core): continuous multi-criteria suitability score for the pilot AOI.
+T3: export the individual criteria layers (slope score, land cover score)
+used in the M5 combined suitability score, so they can be inspected on
+their own in the map's layers panel rather than only seeing the combined
+result.
 
-Grid resolution note: GRID_COLS/GRID_ROWS below control the size of the
-score "squares" on the map — not the underlying data resolution (the DEM
-is real 30m SRTM1, land cover is real 10m WorldCover; both stay at native
-resolution). Raising GRID_COLS/GRID_ROWS just averages those pixels into
-smaller cells, so the map shows finer detail. Keep this in sync with
-GRID_COLS/GRID_ROWS in t3_export_criteria_layers.py so all three score
-layers (suitability, slope, land cover) share the same grid.
+Reuses the same slope/land-cover scoring logic as m5_suitability_score.py,
+gridded onto the same GRID_COLS x GRID_ROWS grid so all layers line up
+spatially. Does NOT touch suitability_score.geojson — this only adds two
+new output files, so it's safe to run any time after M3/M5, including
+after the T1/T2 exclusion script.
 
-Combines two real criteria into one 0-100 score, replacing the M3/M4 binary
-"suitable/not" layer:
-  - slope (from the DEM already downloaded in M3 — no new fetch needed)
-  - land cover (ESA WorldCover 10m, streamed from Microsoft's Planetary
-    Computer — NLCD isn't in that catalog, WorldCover is the equivalent
-    public, global, no-token dataset)
+Run (same venv as M3/M5, from the pipeline/ folder):
+    python3 t3_export_criteria_layers.py
 
-Deliberately NOT included yet (future session, not today's scope):
-  - real transmission-line proximity (M2's lines are placeholder data)
-  - protected-land exclusions (PAD-US)
-  - interactive weight sliders — weights below are hardcoded for now
-  - Recharts stats panel
+Needs internet access (streams land cover data) — run on your own machine.
+Requires data/aoi_dem.tif to already exist (from M3).
 
-Run (from the pipeline/ folder, same venv as M3):
-    pip install -r requirements.txt   # picks up two new packages
-    python3 m5_suitability_score.py
-
-Needs internet access — run on your own machine.
-
-Output: ../public/data/suitability_score.geojson
-  - a grid of cells over the pilot AOI, each with a `score` property (0-100)
+Outputs:
+  ../public/data/slope_score.geojson
+  ../public/data/landcover_score.geojson
 """
 
 import os
@@ -41,36 +30,21 @@ from shapely.geometry import box
 from rasterio.transform import rowcol
 from rasterio.warp import reproject, Resampling
 
-# --- Same pilot AOI as M3: El Dorado, Butler County, KS ---
 WEST, SOUTH, EAST, NORTH = -97.05, 37.70, -96.70, 37.95
 
-DEM_PATH = "data/aoi_dem.tif"  # produced by M3 — run that first if missing
-OUTPUT_PATH = "../public/data/suitability_score.geojson"
+DEM_PATH = "data/aoi_dem.tif"
+SLOPE_OUT = "../public/data/slope_score.geojson"
+LANDCOVER_OUT = "../public/data/landcover_score.geojson"
 
-SLOPE_MAX_DEG = 10.0  # score reaches 0 at this slope; 100 at 0 degrees
-SLOPE_WEIGHT = 0.6
-LANDCOVER_WEIGHT = 0.4
-
-GRID_COLS = 144
+SLOPE_MAX_DEG = 10.0
+GRID_COLS = 144  # keep in sync with m5_suitability_score.py's grid
 GRID_ROWS = 120
 
-# ESA WorldCover class code -> suitability score (0-100). Open land (grass,
-# cropland, bare/sparse ground) scores high; water, wetlands, and built-up
-# areas score low. Legend: https://esa-worldcover.org/en/data-access
 WORLDCOVER_SUITABILITY = {
-    10: 20,   # Tree cover
-    20: 60,   # Shrubland
-    30: 90,   # Grassland
-    40: 80,   # Cropland
-    50: 5,    # Built-up
-    60: 60,   # Bare / sparse vegetation
-    70: 0,    # Snow and ice
-    80: 0,    # Permanent water bodies
-    90: 5,    # Herbaceous wetland
-    95: 5,    # Mangroves
-    100: 50,  # Moss and lichen
+    10: 20, 20: 60, 30: 90, 40: 80, 50: 5, 60: 60,
+    70: 0, 80: 0, 90: 5, 95: 5, 100: 50,
 }
-DEFAULT_LANDCOVER_SCORE = 50  # unmapped/unexpected class codes
+DEFAULT_LANDCOVER_SCORE = 50
 
 
 def compute_slope_score():
@@ -79,13 +53,11 @@ def compute_slope_score():
         transform = src.transform
         crs = src.crs
         shape = elev.shape
-
         deg_to_m = 111_320.0 * np.cos(np.radians((NORTH + SOUTH) / 2))
         px_m = transform.a * deg_to_m
         py_m = -transform.e * 111_320.0
         gy, gx = np.gradient(elev, py_m, px_m)
         slope_deg = np.degrees(np.arctan(np.sqrt(gx**2 + gy**2)))
-
     slope_score = 100 * np.clip((SLOPE_MAX_DEG - slope_deg) / SLOPE_MAX_DEG, 0, 1)
     return slope_score, transform, crs, shape
 
@@ -94,7 +66,7 @@ def get_landcover_score_aligned(ref_transform, ref_crs, ref_shape):
     import pystac_client
     import planetary_computer
 
-    print("Searching Microsoft Planetary Computer for ESA WorldCover land cover over the pilot AOI...")
+    print("Searching Microsoft Planetary Computer for ESA WorldCover land cover...")
     catalog = pystac_client.Client.open(
         "https://planetarycomputer.microsoft.com/api/stac/v1",
         modifier=planetary_computer.sign_inplace,
@@ -102,17 +74,9 @@ def get_landcover_score_aligned(ref_transform, ref_crs, ref_shape):
     search = catalog.search(collections=["esa-worldcover"], bbox=[WEST, SOUTH, EAST, NORTH])
     items = list(search.items())
     if not items:
-        raise RuntimeError(
-            "No ESA WorldCover items found on Planetary Computer for this AOI. If you "
-            "see this, tell Claude — the collection name or query may need adjusting."
-        )
-    # WorldCover items are annual composites with a start/end range rather
-    # than a single `datetime`, so sort on the range's start instead.
+        raise RuntimeError("No ESA WorldCover items found for this AOI.")
     items.sort(key=lambda it: it.properties.get("start_datetime") or "", reverse=True)
     item = items[0]
-    print(f"Using WorldCover item: {item.id}")
-    print(f"Available assets: {list(item.assets.keys())}")
-
     asset = item.assets.get("map") or item.assets.get("data") or next(iter(item.assets.values()))
 
     with rasterio.open(asset.href) as src:
@@ -136,27 +100,23 @@ def get_landcover_score_aligned(ref_transform, ref_crs, ref_shape):
 def grid_average(score_arr, transform):
     lon_edges = np.linspace(WEST, EAST, GRID_COLS + 1)
     lat_edges = np.linspace(SOUTH, NORTH, GRID_ROWS + 1)
-
     rows_out = []
     for i in range(GRID_ROWS):
         for j in range(GRID_COLS):
             cell_w, cell_e = lon_edges[j], lon_edges[j + 1]
             cell_s, cell_n = lat_edges[i], lat_edges[i + 1]
-
             r0, c0 = rowcol(transform, cell_w, cell_n)
             r1, c1 = rowcol(transform, cell_e, cell_s)
             r0, r1 = sorted((max(r0, 0), min(r1, score_arr.shape[0])))
             c0, c1 = sorted((max(c0, 0), min(c1, score_arr.shape[1])))
             if r1 <= r0 or c1 <= c0:
                 continue
-
             block = score_arr[r0:r1, c0:c1]
             if block.size == 0:
                 continue
             mean_score = float(np.nanmean(block))
             if np.isnan(mean_score):
                 continue
-
             rows_out.append(
                 {"score": round(mean_score, 1), "geometry": box(cell_w, cell_s, cell_e, cell_n)}
             )
@@ -170,15 +130,16 @@ def main():
     slope_score, transform, crs, shape = compute_slope_score()
     landcover_score = get_landcover_score_aligned(transform, crs, shape)
 
-    combined = SLOPE_WEIGHT * slope_score + LANDCOVER_WEIGHT * landcover_score
+    slope_cells = grid_average(slope_score, transform)
+    slope_gdf = gpd.GeoDataFrame(slope_cells, crs=crs)
+    os.makedirs(os.path.dirname(SLOPE_OUT), exist_ok=True)
+    slope_gdf.to_file(SLOPE_OUT, driver="GeoJSON")
+    print(f"Wrote {SLOPE_OUT} ({len(slope_gdf)} cells, mean {slope_gdf['score'].mean():.1f})")
 
-    cells = grid_average(combined, transform)
-    gdf = gpd.GeoDataFrame(cells, crs=crs)
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    gdf.to_file(OUTPUT_PATH, driver="GeoJSON")
-
-    print(f"Wrote {OUTPUT_PATH} ({len(gdf)} grid cells)")
-    print(f"Mean combined score: {gdf['score'].mean():.1f} / 100")
+    landcover_cells = grid_average(landcover_score, transform)
+    landcover_gdf = gpd.GeoDataFrame(landcover_cells, crs=crs)
+    landcover_gdf.to_file(LANDCOVER_OUT, driver="GeoJSON")
+    print(f"Wrote {LANDCOVER_OUT} ({len(landcover_gdf)} cells, mean {landcover_gdf['score'].mean():.1f})")
 
 
 if __name__ == "__main__":

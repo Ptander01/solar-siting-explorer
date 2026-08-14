@@ -36,6 +36,14 @@ export function colorForScoreCss(score, rampKey) {
   return `rgb(${r}, ${g}, ${b})`
 }
 
+// Same as colorForScoreCss but with an alpha channel — used for glass-panel
+// glow effects (e.g. the histogram's "Clear filter" pill) that need to
+// match a bar's color without being fully opaque.
+export function colorForScoreRgba(score, rampKey, alpha) {
+  const [r, g, b] = colorForScore(score, rampKey, 255)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
 export function rampCssGradient(rampKey) {
   const colors = RAMPS[rampKey].stops.map(([r, g, b]) => `rgb(${r},${g},${b})`).join(', ')
   return `linear-gradient(to right, ${colors})`

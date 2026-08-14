@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { BarChart, Bar, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { colorForScoreCss } from '../lib/colorRamps.js'
+import { colorForScoreCss, colorForScoreRgba } from '../lib/colorRamps.js'
 
 const BIN_SIZE = 10
 const BIN_COUNT = 100 / BIN_SIZE
@@ -79,19 +79,16 @@ export default function ScoreHistogram({ features, ramp, selectedRange, onRangeC
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-        <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>
+        <div className="glass-section-label" style={{ marginBottom: 4 }}>
           Score distribution (click/drag to filter)
         </div>
         {!isFullRange && !preview && (
           <button
+            className="glass-btn"
             onClick={() => onRangeChange({ min: 0, max: 100 })}
             style={{
-              background: 'none',
-              border: 'none',
-              color: '#60a5fa',
-              fontSize: 11,
-              cursor: 'pointer',
-              padding: 0,
+              '--btn-glow-solid': colorForScoreCss((selectedRange.min + selectedRange.max) / 2, ramp),
+              '--btn-glow': colorForScoreRgba((selectedRange.min + selectedRange.max) / 2, ramp, 0.45),
             }}
           >
             Clear filter
@@ -100,7 +97,7 @@ export default function ScoreHistogram({ features, ramp, selectedRange, onRangeC
       </div>
 
       {!isFullRange && (
-        <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>
+        <div className="glass-section-label" style={{ marginBottom: 4 }}>
           Showing {activeRange.min}–{activeRange.max}
         </div>
       )}
@@ -109,21 +106,26 @@ export default function ScoreHistogram({ features, ramp, selectedRange, onRangeC
         <BarChart data={bins} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
           <XAxis
             dataKey="range"
-            tick={{ fontSize: 8, fill: '#e6e8eb' }}
+            tick={{ fontSize: 8, fill: 'var(--cream)', fontFamily: 'var(--font-ui)' }}
             interval={1}
-            axisLine={{ stroke: 'rgba(255,255,255,0.2)' }}
+            axisLine={{ stroke: 'var(--glass-border)' }}
             tickLine={false}
           />
           <YAxis hide />
           <Tooltip
             contentStyle={{
-              background: '#111418',
-              border: '1px solid rgba(255,255,255,0.15)',
+              background: 'var(--panel-bg)',
+              backdropFilter: 'blur(18px)',
+              WebkitBackdropFilter: 'blur(18px)',
+              border: '1px solid var(--glass-border)',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.35), inset 0 1px 0 var(--glass-shine)',
+              fontFamily: 'var(--font-ui)',
               fontSize: 11,
-              borderRadius: 6,
+              borderRadius: 8,
+              padding: '6px 10px',
             }}
-            labelStyle={{ color: '#e6e8eb' }}
-            cursor={{ fill: 'rgba(255,255,255,0.06)' }}
+            labelStyle={{ color: 'var(--cream)' }}
+            cursor={{ fill: 'rgba(127,127,127,0.12)' }}
           />
           <Bar dataKey="count" radius={[2, 2, 0, 0]} isAnimationActive={false}>
             {bins.map((bin, idx) => {

@@ -1,45 +1,82 @@
-// L1: layers panel shell — one entry per toggleable layer.
-// L2: `extra` now carries per-layer symbology controls (opacity, color
-// ramp) and the legend. L3 (histogram) and L4 (select-by-attribute) will
-// extend this same panel next, rather than adding separate floating UI.
+// Two kinds of layer selection here:
+//   - radioLayers: the score "rasters" (suitability / slope / land cover).
+//     Only one renders at a time — they'd occlude each other anyway, and
+//     showing one at a time is what makes per-layer symbology + a
+//     histogram (in `extra`) make sense, rather than a wall of controls.
+//   - checkboxLayers: independently toggleable vector layers (transmission
+//     lines, protected areas) that make sense to overlay together.
+//
+// Styled as a glass panel — backdrop blur, a soft outer shadow, and
+// "lip" shadows on the pill track / checkboxes (raised when active,
+// pressed into the track when idle) borrowed from another project's
+// glassmorphism system. See src/styles/glass.css for the token set.
 
-export default function LayersPanel({ layers, onToggle, extra }) {
+export default function LayersPanel({
+  radioLayers,
+  activeRadioId,
+  onRadioChange,
+  checkboxLayers,
+  onToggle,
+  extra,
+}) {
   return (
     <div
+      className="glass-panel"
       style={{
         position: 'absolute',
         top: 12,
         left: 12,
-        background: 'rgba(17, 20, 24, 0.85)',
         color: '#e6e8eb',
-        padding: '10px 12px',
-        borderRadius: 8,
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: 13,
+        padding: '14px 14px 16px',
         minWidth: 260,
+        maxWidth: 300,
       }}
     >
-      <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 12, opacity: 0.8 }}>LAYERS</div>
+      <div className="glass-title">Layers</div>
 
-      {layers.map((layer) => (
-        <label
-          key={layer.id}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            cursor: 'pointer',
-            marginBottom: 6,
-          }}
-        >
-          <input
-            type="checkbox"
-            checked={layer.visible}
-            onChange={() => onToggle(layer.id)}
-          />
-          {layer.label}
-        </label>
-      ))}
+      {radioLayers && radioLayers.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <div className="glass-section-label">Score layer (one at a time)</div>
+          <div className="glass-pill-track">
+            {radioLayers.map((layer) => (
+              <div
+                key={layer.id}
+                className={`glass-pill${activeRadioId === layer.id ? ' glass-pill--on' : ''}`}
+                onClick={() => onRadioChange(layer.id)}
+              >
+                <span className="glass-pill-dot" />
+                {layer.label}
+              </div>
+            ))}
+            <div
+              className={`glass-pill${activeRadioId === null ? ' glass-pill--on' : ''}`}
+              onClick={() => onRadioChange(null)}
+              style={{ opacity: activeRadioId === null ? 1 : 0.6 }}
+            >
+              <span className="glass-pill-dot" />
+              None
+            </div>
+          </div>
+        </div>
+      )}
+
+      {checkboxLayers && checkboxLayers.length > 0 && (
+        <div>
+          {radioLayers?.length ? <hr className="glass-divider" /> : null}
+          {checkboxLayers.map((layer) => (
+            <div
+              key={layer.id}
+              className={`glass-checkbox-row${layer.visible ? ' glass-checkbox-row--on' : ''}`}
+              onClick={() => onToggle(layer.id)}
+            >
+              <span className="glass-checkbox-box">
+                <span className="glass-checkbox-check" />
+              </span>
+              {layer.label}
+            </div>
+          ))}
+        </div>
+      )}
 
       {extra}
     </div>
