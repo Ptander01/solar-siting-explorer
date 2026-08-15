@@ -708,7 +708,13 @@ export default function MapView() {
     // hide it rather than offering a layer that renders nothing. null still
     // means "in flight", so layers stay listed while loading.
     return features === null || features.length > 0
-  }).map((id) => ({ id, label: RASTER_CONFIG[id].label }))
+  }).map((id) => ({
+    id,
+    label: RASTER_CONFIG[id].label,
+    // The row's wash reflects the ramp that layer is *currently* using, not a
+    // fixed default — change a ramp and the list follows.
+    gradient: rampCssGradient(symbologyByLayer[id].ramp),
+  }))
 
   const rasterControls = activeRasterLayer && (
     <div style={{ marginTop: 4 }}>
@@ -774,26 +780,41 @@ export default function MapView() {
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
+      {/* Both of these are mode toggles rather than radios, so aria-pressed
+          is the right state to expose. They were the last two `<div onClick>`
+          controls left after the layer-list accessibility pass — an
+          automated check caught them, which is exactly the sort of thing
+          eyeballing the UI misses. */}
       <div className="glass-panel" style={{ position: 'absolute', top: 108, right: 12, padding: 5 }}>
-        <div
+        <button
+          type="button"
+          aria-pressed={basemap === 'satellite'}
+          aria-label={`Basemap: ${basemap === 'satellite' ? 'satellite imagery' : 'street map'}`}
           className={`glass-pill${basemap === 'satellite' ? ' glass-pill--on' : ''}`}
           onClick={toggleBasemap}
           style={{ marginBottom: 0 }}
         >
-          <span className="glass-pill-dot" />
-          {basemap === 'satellite' ? 'Satellite' : 'Streets'}
-        </div>
+          <span className="glass-pill-body">
+            <span className="glass-pill-dot" />
+            {basemap === 'satellite' ? 'Satellite' : 'Streets'}
+          </span>
+        </button>
       </div>
 
       <div className="glass-panel" style={{ position: 'absolute', top: 150, right: 12, padding: 5 }}>
-        <div
+        <button
+          type="button"
+          aria-pressed={theme === 'light'}
+          aria-label={`Theme: ${theme === 'light' ? 'light' : 'dark'}`}
           className={`glass-pill${theme === 'light' ? ' glass-pill--on' : ''}`}
           onClick={toggleTheme}
           style={{ marginBottom: 0 }}
         >
-          <span className="glass-pill-dot" />
-          {theme === 'light' ? 'Light' : 'Dark'}
-        </div>
+          <span className="glass-pill-body">
+            <span className="glass-pill-dot" />
+            {theme === 'light' ? 'Light' : 'Dark'}
+          </span>
+        </button>
       </div>
 
       <AnalysisPanel
@@ -828,8 +849,20 @@ export default function MapView() {
         activeRadioId={activeRasterLayer}
         onRadioChange={setActiveRasterLayer}
         checkboxLayers={[
-          { id: 'lines', label: 'Transmission lines (HIFLD)', visible: layersVisible.lines },
-          { id: 'protected', label: 'Protected areas (PAD-US)', visible: layersVisible.protected },
+          {
+            id: 'lines',
+            label: 'Transmission lines (HIFLD)',
+            visible: layersVisible.lines,
+            // Same colors the MapLibre paint properties use below, so the
+            // swatch can't drift from what's actually drawn.
+            swatch: { type: 'line', color: '#f59e0b' },
+          },
+          {
+            id: 'protected',
+            label: 'Protected areas (PAD-US)',
+            visible: layersVisible.protected,
+            swatch: { type: 'fill', color: '#22c55e' },
+          },
         ]}
         onToggle={toggleLayer}
         extra={rasterControls}

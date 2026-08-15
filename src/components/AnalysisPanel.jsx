@@ -164,13 +164,19 @@ export default function AnalysisPanel({
 
       <div className="glass-section-label">Study area</div>
       <div className="glass-pill-track" style={{ marginBottom: 8 }}>
-        <div
+        {/* A mode toggle, not a radio — aria-pressed says "this button is
+            currently active", which is what arming draw mode means. */}
+        <button
+          type="button"
+          aria-pressed={drawArmed}
           className={`glass-pill${drawArmed ? ' glass-pill--on' : ''}`}
           onClick={onToggleDraw}
         >
-          <span className="glass-pill-dot" />
-          {drawArmed ? 'Drag on map… (Esc)' : 'Draw AOI'}
-        </div>
+          <span className="glass-pill-body">
+            <span className="glass-pill-dot" />
+            {drawArmed ? 'Drag on map… (Esc)' : 'Draw AOI'}
+          </span>
+        </button>
       </div>
 
       <div className="analysis-readout">
@@ -247,7 +253,10 @@ export default function AnalysisPanel({
         onChange={(e) => onTransmissionMaxKmChange(Number(e.target.value))}
       />
 
-      <div
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={applyExclusions}
         className={`glass-checkbox-row${applyExclusions ? ' glass-checkbox-row--on' : ''}`}
         onClick={() => onApplyExclusionsChange(!applyExclusions)}
         style={{ marginTop: 10 }}
@@ -256,7 +265,7 @@ export default function AnalysisPanel({
           <span className="glass-checkbox-check" />
         </span>
         Exclude protected land
-      </div>
+      </button>
 
       <div className="glass-section-label" style={{ marginTop: 12 }}>Grid resolution</div>
       <select

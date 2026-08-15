@@ -37,6 +37,12 @@
      inconsistent typography. Everything below inherits from body. */
   --font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 
+  /* Strength of the layer-list ramp wash, idle and selected. Tuned per
+     theme — the same alpha reads much heavier over white than over
+     near-black. */
+  --ramp-wash: 0.17;
+  --ramp-wash-on: 0.28;
+
   --lip-out:
     -1px -1px 3px rgba(255, 255, 255, 0.04),
      1px  1px 6px rgba(0, 0, 0, 0.55),
@@ -71,6 +77,9 @@
   --cream: #1f2937;
   --cream-dim: #55626f;
   --muted: #96a2ad;
+
+  --ramp-wash: 0.13;
+  --ramp-wash-on: 0.2;
 
   --lip-out:
     -1px -1px 2px rgba(255, 255, 255, 0.7),
@@ -231,6 +240,13 @@ body {
 }
 
 .glass-pill {
+  /* <button> reset — these were divs until the accessibility pass. */
+  appearance: none;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+
   display: flex;
   align-items: center;
   gap: 8px;
@@ -242,6 +258,11 @@ body {
   cursor: pointer;
   transition: color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
   user-select: none;
+
+  /* Contains the absolutely-positioned ramp wash below. */
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
 }
 .glass-pill:hover {
   color: var(--cream);
@@ -271,6 +292,12 @@ body {
 }
 
 .glass-checkbox-row {
+  appearance: none;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+
   display: flex;
   align-items: center;
   gap: 8px;
@@ -542,4 +569,77 @@ body {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   color: var(--accent);
+}
+
+/* ── Layer-list symbology hints ───────────────────────────────────────
+   Each score row carries a faint wash of that layer's *current* ramp, so
+   the list says something about the map rather than just naming layers.
+
+   Painted as an overlay element rather than as the pill's background,
+   specifically so it survives on the selected row: `.glass-pill--on` sets a
+   warm amber background, and a viridis or blue ramp tucked underneath that
+   would just read as muddy amber. Sitting above it, the hue still comes
+   through while the amber lip, glow and dot keep saying "this is the active
+   layer". Selection and symbology stay separate signals. */
+
+.glass-pill-wash {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: var(--ramp-wash);
+  transition: opacity 0.18s ease;
+}
+.glass-pill--on .glass-pill-wash {
+  opacity: var(--ramp-wash-on);
+}
+/* The label and dot have to sit above the wash. */
+.glass-pill-body {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Vector layers are single-color on the map, so a gradient would be a lie.
+   They get a geometry-appropriate patch instead — a stroke for lines, a
+   filled chip with an outline for polygons — which is the distinction
+   desktop GIS legends make. */
+.layer-swatch {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+}
+.layer-swatch-line {
+  width: 15px;
+  height: 2.5px;
+  border-radius: 2px;
+}
+.layer-swatch-fill {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1.5px solid;
+}
+
+/* ── Keyboard focus ───────────────────────────────────────────────────
+   Every control in these panels is now natively focusable. :focus-visible
+   so a mouse click doesn't leave a ring behind, and an offset ring rather
+   than an outline flush to the edge, which the rounded pills would clip. */
+.glass-pill:focus-visible,
+.glass-checkbox-row:focus-visible,
+.glass-btn:focus-visible,
+.glass-select:focus-visible,
+.glass-slider:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  color: var(--cream);
+}
+.glass-pill:focus-visible {
+  outline-offset: -1px;
 }
