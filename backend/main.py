@@ -20,6 +20,8 @@ already-known result (see README.md for what to expect):
       -d '{"bbox": [-97.05, 37.70, -96.70, 37.95]}'
 """
 
+import os
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -32,12 +34,26 @@ from suitability import (
 
 app = FastAPI(title="Solar Siting Explorer — Suitability API")
 
-# The Vite dev server runs on localhost:5173 by default — allow it (and
-# the 127.0.0.1 form) to call this API directly from the browser once B3
-# wires the frontend up to it.
+# In dev and in Docker the browser never makes a cross-origin request at all
+# — it calls the same-origin path /api, which Vite's proxy or nginx forwards
+# here (see src/lib/api.js). CORS only comes into play for a split deploy
+# where the frontend is on a static host and the API is on its own domain, so
+# the allowed origins are configurable rather than hardcoded.
+#
+#     SSE_ALLOWED_ORIGINS="https://your-app.vercel.app,https://yourdomain.com"
+#
+# Defaults to the Vite dev server so a bare `uvicorn main:app` still works if
+# someone points a browser straight at it. See DEPLOY.md.
+DEFAULT_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+allowed_origins = [
+    origin.strip()
+    for origin in os.environ.get("SSE_ALLOWED_ORIGINS", DEFAULT_ORIGINS).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=allowed_origins,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )

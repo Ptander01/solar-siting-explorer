@@ -1,64 +1,242 @@
 # Solar Siting Explorer
 
-Interactive multi-criteria solar-siting suitability map. Built to close a specific
-skill gap: modern open-source web mapping (MapLibre GL JS + deck.gl), on top of an
-existing Python geospatial background (GeoPandas / Rasterio / GDAL).
+Interactive multi-criteria suitability analysis for utility-scale solar siting.
+Draw a study area anywhere in the US, set your own criterion weights, and the
+real Python geoprocessing pipeline runs against it on demand — SRTM elevation,
+ESA WorldCover land cover, HIFLD transmission lines, and USGS PAD-US protected
+areas, combined into a 0–100 score and rendered with MapLibre GL JS + deck.gl.
 
-## What it does
+Built to close a specific skill gap — modern open-source web mapping — on top
+of an existing Python/ArcGIS geospatial background. The analysis stays in
+Python; the JavaScript renders it.
 
-Renders a suitability score (0–100) for utility-scale solar siting across a small
-pilot AOI (one county or similar), built from open criteria layers:
+<!--
+  SCREENSHOTS — add three PNGs to docs/screenshots/ and uncomment this block:
+    01-overview.png   the pilot AOI with the suitability layer + both panels
+    02-draw.png       mid-drag, the draft rectangle visible over the map
+    03-live.png       a completed live run, live layer selected, status showing
+  A short screen recording of draw → run → result is worth more than all three;
+  drop it in as docs/screenshots/demo.gif and lead with it.
 
-- **Slope** — derived from a USGS 3DEP DEM clip (Rasterio)
-- **Land cover** — NLCD, reclassified into suitable/unsuitable
-- **Transmission proximity** — distance to lines from HIFLD
-- **Exclusions** — protected land from PAD-US
+![Suitability layer over the pilot AOI](docs/screenshots/01-overview.png)
+-->
 
-Criteria are weighted and combined in a Python pipeline, exported as vector tiles,
-and rendered in a MapLibre map with deck.gl layers for the score surface and
-interactive weight sliders.
+## What it computes
 
-## Stack
+Each grid cell gets a 0–100 score from three weighted criteria, with a fourth
+dataset applied as a hard exclusion on top.
 
-| Layer | Choice | Why |
+| Criterion | Source | Scoring |
 |---|---|---|
-| Basemap / vector tiles | **MapLibre GL JS** | Open-source, no API key, industry-standard vector tile renderer — this is the actual skill gap to close |
-| Data overlays (suitability surface, hover interactions) | **deck.gl** | WebGL layers (GridLayer/HeatmapLayer) composed on top of MapLibre for the scored surface; complementary skill, not a replacement |
-| Frontend | React + Vite | Matches existing portfolio stack |
-| Charts | Recharts | Score distribution / site stats panel, matches portfolio |
-| Motion | Framer Motion | Panel transitions, matches portfolio |
-| Geoprocessing | Python — GeoPandas, Rasterio, GDAL | Existing strength; this is where the "real analysis" lives, JS just renders it |
-| Tiles | tippecanoe → PMTiles (served statically, no tile server needed) | Keeps the deploy simple — no backend required |
-| Containerization | Docker (multi-stage: Python pipeline stage → static build → nginx) | Clean, reproducible, one `docker compose up` |
+| **Slope** | SRTM 30m, AWS `elevation-tiles-prod` | Linear falloff: 100 at 0°, 0 at `slope_max_deg` (default 10°) |
+| **Land cover** | ESA WorldCover 10m, via Microsoft Planetary Computer STAC | Per-class lookup — grassland 90, cropland 80, built-up 5, water 0 |
+| **Transmission proximity** | HIFLD Electric Power Transmission Lines (public ArcGIS REST) | Linear falloff: 100 at the line, 0 at `transmission_max_km` (default 10 km) |
+| **Protected land** | USGS PAD-US (public ArcGIS REST) | **Exclusion**, not a criterion — overlapping cells keep 5% of their score |
 
-Note: there isn't a mature, widely-adopted library called "GeoLibre" as of this
-writing — MapLibre GL JS is the real open-source-first choice (it's the
-community-maintained fork of Mapbox GL JS after Mapbox's license change).
-deck.gl is the right complement for the data-viz layers, not a competitor to
-MapLibre — they're typically used together, which is what this project does.
+Default weights are **45 / 30 / 25** (slope / land cover / transmission).
+Weights are sent as independent 0–100 priorities and normalized server-side to
+sum to 1, so the output is always on a real 0–100 scale, and the applied values
+come back in the response.
 
-## Milestones (small, single-sitting sized — check off as you go)
+Every criterion is also exported as its own layer, so you can see *why* a cell
+scored the way it did rather than only the combined number.
 
-- [ ] **M0 — It runs.** Vite + React blank page. `docker build` + `docker run` serves it on localhost. No map yet — just confirm the container pipeline works.
-- [ ] **M1 — Basemap.** MapLibre fills the viewport, dark-themed to match portfolio, pan/zoom works. No data yet.
-- [ ] **M2 — One real layer.** Load a single static GeoJSON (e.g. transmission lines for one state) as a MapLibre layer. Click a feature → popup with attributes.
-- [ ] **M3 — First suitability pass.** Python script computes slope suitability from a small DEM clip for ONE small AOI (one county), exports GeoJSON. No web changes yet — just confirm the analysis runs and looks right in QGIS.
-- [ ] **M4 — Suitability on the map.** Bring the M3 output in as a deck.gl layer, color-graded by score. Toggle on/off.
-- [ ] **M5 — Multi-criteria + interactivity.** Add remaining criteria layers, weight sliders (Framer Motion panel), Recharts panel showing score distribution for the current view.
-- [ ] **M6 — Polish + ship.** Responsive layout, README write-up of methodology/limitations, deploy (Vercel for frontend, Docker Compose documented for full reproducibility), link from main portfolio.
+Two implementation details that matter for correctness:
 
-Each milestone should end with something visibly different on screen — that's
-the point, not a coincidence.
+- **Distances are measured in a projected CRS**, not degrees —
+  `GeoDataFrame.estimate_utm_crs()` picks the AOI's UTM zone so `.distance()`
+  returns metres. A degree is ~111 km north–south but ~88 km east–west at 38°N;
+  scoring degrees against a kilometre cutoff would be wrong *and* directionally
+  biased, while still producing a plausible-looking map.
+- **The transmission query uses a padded bounding box.** An ArcGIS envelope
+  query only returns lines intersecting the box you give it, so querying the
+  raw AOI would miss a line 500 m outside the edge and score nearby cells as
+  unreachable.
 
-## Repo layout
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph browser["Browser"]
+    UI["React + Vite<br/>MapLibre GL JS + deck.gl<br/>Recharts histogram"]
+  end
+
+  subgraph web["web container — nginx"]
+    STATIC["Static build<br/>+ public/data/*.geojson"]
+    PROXY["/api reverse proxy"]
+  end
+
+  subgraph api["api container — FastAPI"]
+    ANALYZE["POST /analyze<br/>run_analysis()"]
+    CACHE[("DEM tile cache<br/>named volume")]
+  end
+
+  subgraph sources["Public data sources"]
+    SRTM["SRTM 30m<br/>AWS"]
+    WC["ESA WorldCover<br/>Planetary Computer"]
+    HIFLD["HIFLD lines<br/>ArcGIS REST"]
+    PADUS["PAD-US<br/>ArcGIS REST"]
+  end
+
+  UI -->|"pre-baked layers"| STATIC
+  UI -->|"live runs"| PROXY --> ANALYZE
+  ANALYZE <--> CACHE
+  ANALYZE --> SRTM & WC & HIFLD & PADUS
+  BATCH["pipeline/regenerate_baked_layers.py"] -->|"imports run_analysis()"| ANALYZE
+  BATCH -->|"writes"| STATIC
+```
+
+The important edge is the dashed one in spirit: **`pipeline/regenerate_baked_layers.py`
+imports `run_analysis()` from the backend** rather than reimplementing it. The
+pre-baked pilot layers and a live API run are the same computation with the
+same defaults by construction — which is the fix for a real bug this project
+had (see [Methodology notes](#methodology-notes)).
+
+## Quickstart
+
+### Docker (both halves, recommended)
+
+```bash
+docker compose up --build
+# → http://localhost:8080
+```
+
+`web` serves the built site and reverse-proxies `/api` to `api` over Compose's
+internal network, so the browser only ever sees one origin — no CORS involved.
+SRTM tiles are cached in a named volume, so repeat runs over the same area skip
+the download.
+
+### Local dev
+
+Two terminals. First the API:
+
+```bash
+cd backend
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+```
+
+Then the frontend:
+
+```bash
+npm install
+npm run dev          # → http://localhost:5173
+```
+
+Vite proxies `/api` to `localhost:8000` (see `vite.config.js`), so the app code
+uses the same single URL it does in Docker. The map and all pre-baked layers
+work without the API running; only **Run analysis** needs it, and the panel
+tells you up front if it's unreachable.
+
+### Regenerating the pre-baked layers
+
+```bash
+cd pipeline
+python3 regenerate_baked_layers.py     # needs network; backend deps
+```
+
+Rebuilds every file in `public/data/` for the pilot AOI in a single pass. This
+is the canonical path — the older `m3` / `m5` / `t_` / `t3` scripts are kept as
+a record of how the pipeline was built up milestone by milestone, but they're
+marked SUPERSEDED and encode an older methodology.
+
+## Using it
+
+- **Draw AOI** arms rectangle-drawing; drag on the map, `Esc` cancels. The
+  readout tracks the draft box live, including its area against the API's
+  1 sq° cap, so you find out you've drawn something too large before releasing
+  the mouse.
+- **Criterion weights** are relative priorities — the panel shows the
+  normalized shares that will actually be applied.
+- **Run analysis** calls the API. This takes real seconds (SRTM fetch,
+  WorldCover window, then scoring), hence the elapsed timer and cancel button —
+  unlike every control in the Layers panel, which is instant client-side
+  symbology.
+- **The histogram is a filter.** Click a bar to select that score range, drag
+  across several for a wider one. Out-of-range cells fade rather than disappear,
+  so the AOI's shape stays legible. Click the same selection again to clear.
+- **Copy link to this analysis** puts the AOI and every parameter in the URL.
+  Reopening it restores the study area and zooms the map to it.
+
+## API
+
+`POST /api/analyze` (or `:8000/analyze` directly)
+
+```jsonc
+{
+  "bbox": [-97.05, 37.70, -96.70, 37.95],  // [west, south, east, north], required
+  "slope_max_deg": 10.0,
+  "slope_weight": 45,          // relative; normalized server-side
+  "landcover_weight": 30,
+  "transmission_weight": 25,   // 0 skips the HIFLD query entirely
+  "transmission_max_km": 10.0,
+  "apply_exclusions": true,
+  "grid_cols": 144,
+  "grid_rows": 120
+}
+```
+
+Returns a GeoJSON `FeatureCollection`. Each feature carries `score` plus the
+per-criterion values behind it (`slope_score`, `landcover_score`,
+`transmission_score`, `slope_deg`, `landcover_class`, `transmission_km`,
+`excluded`), and a top-level `metadata` member reports the normalized weights,
+how many lines and protected areas were found, the excluded-cell count and the
+mean score.
+
+`GET /api/health` → `{"status": "ok"}`.
+
+Errors are FastAPI `{"detail": "..."}`: `400` for a bad or oversized AOI,
+`502` when an upstream data source fails. The messages are written to be shown
+to a user as-is.
+
+## Project layout
 
 ```
-solar-siting-explorer/
-  src/            React app (MapLibre + deck.gl)
-    components/   Map, layer panel, sliders, stats panel
-    lib/          data loading, layer config
-  pipeline/       Python geoprocessing (GeoPandas/Rasterio) — produces tiles/GeoJSON consumed by src/
-  public/         static assets, PMTiles output lands here for the frontend build
-  Dockerfile
-  docker-compose.yml
+src/
+  components/   MapView (map + deck.gl + state), LayersPanel, AnalysisPanel, ScoreHistogram
+  lib/          bboxDraw (rectangle drawing), api (fetch client), urlState (permalinks), colorRamps
+  styles/       glass.css — the glassmorphism design system, one variable set per theme
+backend/
+  suitability.py    run_analysis() — the single source of truth for scoring
+  main.py           FastAPI wrapper
+pipeline/
+  regenerate_baked_layers.py   canonical: rebuilds public/data/ via run_analysis()
+  m3_/m5_/t_/t3_               SUPERSEDED; kept as build history
+public/data/      pre-baked GeoJSON the frontend loads on first paint
+nginx.conf        static serving + /api proxy for the web image
 ```
+
+## Methodology notes
+
+**Transmission proximity was described before it was implemented.** For a
+while, this project's write-up claimed a four-criterion score while the code
+computed two: the HIFLD lines were fetched and drawn on the map, but never
+scored. The cause was three copies of the scoring logic — the batch script, the
+script that layered exclusions on its output, and later the API — which is
+exactly how an implementation and its documentation drift apart without anyone
+lying. It's fixed structurally: one `run_analysis()`, imported by the batch
+script rather than reimplemented, and the criterion now genuinely exists.
+
+**The score is a demonstration, not a siting recommendation.** Real siting
+analysis needs land ownership and parcel geometry, interconnection queue
+position and available substation capacity (proximity to a line is a poor proxy
+for whether you can actually connect to it), setback and zoning rules,
+floodplain and wetland delineation, solar resource (GHI/DNI), and slope
+*aspect*, not just magnitude. The weights here are defaults chosen to be
+explainable, not calibrated against anything.
+
+**Known limitations.** SRTM's 30m is coarse next to USGS 3DEP for most of the
+US. AOIs are capped at 1 square degree because the grid-averaging step is an
+O(rows × cols) Python loop. The custom pill and checkbox controls are
+mouse-only — they need proper roles and keyboard handling.
+
+## Data sources
+
+All public, no API keys or accounts required:
+
+- **SRTM 30m elevation** — [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/)
+- **ESA WorldCover 10m** — via [Microsoft Planetary Computer](https://planetarycomputer.microsoft.com/dataset/esa-worldcover)
+- **HIFLD Electric Power Transmission Lines** — public ArcGIS Feature Service
+- **USGS PAD-US** — public ArcGIS Feature Service
+- Basemaps: [CARTO](https://carto.com/basemaps/) vector styles, Esri World Imagery

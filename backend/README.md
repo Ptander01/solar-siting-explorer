@@ -1,25 +1,14 @@
-# Suitability API (B1)
+# Suitability API
 
-A small FastAPI service that wraps the same slope + land-cover suitability
-logic as `pipeline/m5_suitability_score.py`, but callable on demand for any
-bbox and weight parameters instead of only the hardcoded pilot AOI. This is
-the first step toward letting a user draw their own study area on the map —
-it doesn't do that yet (that's B2/B3); right now it's just the API,
-verified against the known pilot-AOI result.
+FastAPI service exposing the project's scoring pipeline on demand for any
+bounding box and weight set. `suitability.py` is the **single source of truth**
+for how a suitability score is computed anywhere in this project —
+`pipeline/regenerate_baked_layers.py` imports `run_analysis()` from it rather
+than reimplementing it, so the pre-baked layers and a live run can't drift
+apart.
 
-## What this does — and doesn't — do yet
-
-- **Does:** fetch SRTM elevation + ESA WorldCover land cover for whatever
-  bbox you send it, compute the same weighted slope/land-cover score as
-  the pipeline script, grid-average it, and return GeoJSON.
-- **Doesn't yet:** apply the protected-land exclusion or real transmission
-  data from `pipeline/t_real_transmission_and_exclusions.py` — this
-  endpoint's output matches `m5_suitability_score.py`'s output *before*
-  that script runs. Folding the exclusion in is a reasonable next step,
-  just not part of B1.
-- **Isn't wired to the frontend yet.** The map still reads the static
-  files in `public/data/`. B2 adds an AOI-drawing tool; B3 connects the
-  layers panel's sliders to actually call this endpoint.
+See the root README for the criteria, scoring curves, and request/response
+shape. This file is about running and checking the service.
 
 ## Run it
 
@@ -28,79 +17,100 @@ dependencies, plus FastAPI/uvicorn:
 
 ```bash
 cd backend
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-You should see something like:
-
-```
-INFO:     Uvicorn running on http://127.0.0.1:8000
-INFO:     Application startup complete.
-```
-
-Leave that running in its own terminal tab.
+Or just `docker compose up` from the repo root, which runs this alongside the
+frontend with the DEM cache on a named volume.
 
 ## Sanity-check it
-
-In a second terminal, first check it's alive:
 
 ```bash
 curl http://localhost:8000/health
 # {"status":"ok"}
 ```
 
-Then run it against the pilot AOI — the same bbox
-`m5_suitability_score.py` has always used — so the result is checkable
-against a number we already know:
-
-```bash
-curl -X POST http://localhost:8000/analyze \
-  -H "Content-Type: application/json" \
-  -d '{"bbox": [-97.05, 37.70, -96.70, 37.95]}'
-```
-
-This will take a bit longer than instant — it's fetching real SRTM tiles
-and querying Planetary Computer for land cover, not reading a cached
-file — expect somewhere in the ballpark of 10-30 seconds depending on your
-connection.
-
-**What to check in the response:**
-
-- It's a GeoJSON `FeatureCollection` with a `features` array.
-- With the default grid (144×120), there should be around 17,000-17,300
-  features (a few less than the full 17,280 is normal — cells right at the
-  AOI edge can get clipped out).
-- Each feature's `properties.score` should be a number 0-100. The pilot
-  AOI's combined slope+land-cover score (before the protected-land
-  exclusion this endpoint doesn't apply) has consistently averaged around
-  **79-80/100** across every earlier run of the pipeline script — if the
-  mean here is wildly different, something's off.
-
-A quick way to check the mean without leaving the terminal (requires
-`jq`, `brew install jq` if you don't have it):
+Then run it against the pilot AOI. The first call fetches real SRTM tiles and
+queries Planetary Computer, so expect roughly 10–30 seconds depending on your
+connection; **subsequent calls over the same area are much faster** because the
+SRTM tiles are cached on disk (see below).
 
 ```bash
 curl -s -X POST http://localhost:8000/analyze \
   -H "Content-Type: application/json" \
-  -d '{"bbox": [-97.05, 37.70, -96.70, 37.95]}' \
-  | jq '[.features[].properties.score] | add / length'
+  -d '{"bbox": [-97.05, 37.70, -96.70, 37.95],
+       "slope_weight": 45, "landcover_weight": 30, "transmission_weight": 25}' \
+  | jq '.metadata'
 ```
 
-## Optional: try a different AOI
+`metadata` is the quickest way to confirm everything worked — it reports the
+normalized weights actually applied, how many transmission segments and
+protected areas were found, how many cells were excluded, the cell count and
+the mean score:
 
-Any bbox works, as long as it's over land and no larger than 1 square
-degree (a safety cap in `suitability.py`'s `MAX_AOI_DEG2` — a real
-AOI-drawing tool would also want a client-side warning before ever
-reaching this limit). For example, a small AOI elsewhere in Kansas:
+```jsonc
+{
+  "bbox": [-97.05, 37.7, -96.7, 37.95],
+  "weights": { "slope": 0.45, "landcover": 0.3, "transmission": 0.25 },
+  "transmission_lines_found": 12,
+  "protected_areas_found": 3,
+  "excluded_cells": 214,
+  "cell_count": 17280,
+  "mean_score": 71.8
+}
+```
+
+**What to check:**
+
+- Around 17,000–17,300 features at the default 144×120 grid (a few short of
+  17,280 is normal — cells at the AOI edge can clip out).
+- Every `properties.score` is 0–100.
+- `transmission_lines_found` is non-zero for this AOI. A zero here isn't
+  necessarily a bug — it means no line within the cutoff, and the transmission
+  criterion correctly scores 0 everywhere — but for Butler County it would be
+  suspicious.
+- **Historical reference point:** before transmission was a scored criterion,
+  the slope + land-cover score for this AOI consistently averaged **79–80**
+  pre-exclusion. You can still reproduce that number exactly, which is a useful
+  regression check:
 
 ```bash
-curl -X POST http://localhost:8000/analyze \
+curl -s -X POST http://localhost:8000/analyze \
   -H "Content-Type: application/json" \
-  -d '{"bbox": [-95.70, 39.00, -95.55, 39.10]}'
+  -d '{"bbox": [-97.05, 37.70, -96.70, 37.95],
+       "slope_weight": 0.6, "landcover_weight": 0.4,
+       "transmission_weight": 0, "apply_exclusions": false}' \
+  | jq '.metadata.mean_score'
+# ~79.4
 ```
 
-If that returns a sensible-looking score distribution too, B1 is solid and
-ready for B2 (AOI drawing) to build on top of.
+## The DEM cache
+
+SRTM tiles are cached on disk between requests rather than re-downloaded into a
+per-request temp directory. SRTM is an immutable product, so there's nothing to
+invalidate — fetched once, good forever.
+
+- Location: `$SSE_CACHE_DIR`, defaulting to `<tempdir>/sse-dem-cache`. Docker
+  Compose sets it to `/cache/dem` on a named volume so it survives rebuilds.
+- Downloads write to a `.part` file and are atomically renamed, so a request
+  that dies mid-download can't leave a truncated tile for the next one to read
+  as valid.
+- To clear it, delete the directory (or `docker volume rm
+  solar-siting-explorer_dem-cache`).
+
+## Guards
+
+- `MAX_AOI_DEG2 = 1.0` — one request can't ask for a whole state. The frontend
+  checks the same number client-side so an over-cap AOI is rejected before the
+  request is made.
+- Degenerate bboxes (`east <= west`, `north <= south`) and all-zero weights are
+  rejected with `400`.
+- Upstream failures (SRTM tile fetch, Planetary Computer, ArcGIS) return `502`
+  with a message written to be shown to a user as-is — e.g. *"Couldn't fetch
+  SRTM tile N37W097 — is this AOI over land?"*
+
+## Deploying
+
+See [`DEPLOY.md`](../DEPLOY.md) in the repo root.

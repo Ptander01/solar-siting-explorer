@@ -1,0 +1,65 @@
+# Fly.io config for the suitability API. See ../DEPLOY.md for the walkthrough.
+#
+# Fly is a good fit here specifically because this service needs two things a
+# plain serverless platform doesn't give you: a real container (the geospatial
+# dependency stack is not a lambda-sized zip) and a persistent disk for the
+# SRTM tile cache, which is what makes a second run over the same area fast.
+#
+# Rename `app` to something unique before the first deploy — Fly app names are
+# global.
+
+app = "solar-siting-explorer-api"
+primary_region = "ord"   # pick one near you: `fly platform regions`
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  SSE_CACHE_DIR = "/cache/dem"
+  # Set the real value with `fly secrets set` (or edit here) once the frontend
+  # has a URL. Only needed for a split-origin deploy — see DEPLOY.md.
+  # SSE_ALLOWED_ORIGINS = "https://your-app.vercel.app"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Scale to zero when idle. A portfolio API serves a handful of requests a
+  # day, and the tradeoff is a cold start on the first one — which is small
+  # next to the 10-30s the analysis itself takes.
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    # An /analyze run is CPU-bound Python, not I/O-bound. Letting many land on
+    # one small machine at once makes them all slow rather than any of them
+    # fast.
+    type = "requests"
+    soft_limit = 2
+    hard_limit = 4
+
+[[vm]]
+  # 512 MB is not enough: rasterio holds the mosaicked DEM plus the reprojected
+  # WorldCover window in memory, and the grid step builds a GeoDataFrame of up
+  # to ~39k cells. 1 GB has headroom; drop it only after watching real usage.
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
+
+# Persistent disk for the SRTM cache. Create it once before the first deploy:
+#   fly volumes create dem_cache --size 3 --region ord
+# 3 GB holds roughly 100 SRTM tiles (~25 MB each uncompressed) — far more than
+# a portfolio demo will ever touch.
+[mounts]
+  source = "dem_cache"
+  destination = "/cache/dem"
+
+[checks]
+  [checks.health]
+    type = "http"
+    port = 8000
+    method = "get"
+    path = "/health"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
