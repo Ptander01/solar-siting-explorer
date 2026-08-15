@@ -14,6 +14,7 @@ import {
   bindBboxDraw,
 } from '../lib/bboxDraw.js'
 import { analyze, checkHealth } from '../lib/api.js'
+import { readUrlState, writeUrlState } from '../lib/urlState.js'
 
 // Basemap styles. "streets" has a dark and a light variant so it tracks
 // the UI theme (light UI over the dark vector basemap looked mismatched);
@@ -94,6 +95,11 @@ const RASTER_CONFIG = {
   suitability: { label: 'Suitability score (combined)', path: '/data/suitability_score.geojson', tooltipLabel: 'Suitability', defaultRamp: 'redGreen' },
   slope: { label: 'Slope score (input layer)', path: '/data/slope_score.geojson', tooltipLabel: 'Slope score', defaultRamp: 'blues' },
   landcover: { label: 'Land cover score (input layer)', path: '/data/landcover_score.geojson', tooltipLabel: 'Land cover score', defaultRamp: 'viridis' },
+  // C2 — transmission proximity became a real scored criterion, so it gets a
+  // standalone layer like the other two. The file only exists once
+  // pipeline/regenerate_baked_layers.py has been run; until then the fetch
+  // fails and the layer is hidden from the list rather than shown empty.
+  transmission: { label: 'Transmission score (input layer)', path: '/data/transmission_score.geojson', tooltipLabel: 'Transmission score', defaultRamp: 'blues' },
   [LIVE_LAYER_ID]: { label: 'Live analysis (drawn AOI)', path: null, tooltipLabel: 'Suitability (live)', defaultRamp: 'redGreen' },
 }
 const RASTER_IDS = Object.keys(RASTER_CONFIG)
@@ -109,9 +115,20 @@ const AOI_COLORS = {
   light: { line: [31, 41, 55, 230], fill: [31, 41, 55, 14], draft: [184, 121, 10, 235] },
 }
 
-const DEFAULT_SLOPE_MAX_DEG = 10
-const DEFAULT_SLOPE_WEIGHT = 0.6
-const DEFAULT_RESOLUTION = 'standard'
+// Defaults match pipeline/regenerate_baked_layers.py, so a live run over the
+// pilot AOI with untouched controls reproduces the pre-baked layer rather
+// than quietly differing from it.
+const DEFAULT_ANALYSIS = {
+  aoi: PILOT_AOI,
+  slopeMaxDeg: 10,
+  weights: { slope: 45, landcover: 30, transmission: 25 },
+  transmissionMaxKm: 10,
+  applyExclusions: true,
+  resolution: 'standard',
+  layer: 'suitability',
+  resolutions: Object.keys(RESOLUTIONS),
+  layers: RASTER_IDS,
+}
 
 function getInitialTheme() {
   if (typeof window === 'undefined') return 'dark'
@@ -129,6 +146,10 @@ function meanScoreOf(features) {
 }
 
 export default function MapView() {
+  // C3 — seed every analysis input from the query string once, at mount, so
+  // a shared link opens on the study area and parameters it encodes.
+  const initial = useRef(readUrlState(DEFAULT_ANALYSIS)).current
+
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const overlayRef = useRef(null)
@@ -180,7 +201,7 @@ export default function MapView() {
   }, [basemap, theme])
 
   // Which single score layer is currently shown (or null for none).
-  const [activeRasterLayer, setActiveRasterLayer] = useState('suitability')
+  const [activeRasterLayer, setActiveRasterLayer] = useState(initial.layer)
   // Kept in a ref too, so the tooltip callback (built once at map-init time)
   // always reads the current value instead of closing over the initial one.
   const activeRasterLayerRef = useRef(activeRasterLayer)
@@ -194,6 +215,7 @@ export default function MapView() {
     suitability: { ramp: 'redGreen', opacity: 170 },
     slope: { ramp: 'blues', opacity: 170 },
     landcover: { ramp: 'viridis', opacity: 170 },
+    transmission: { ramp: 'blues', opacity: 170 },
     [LIVE_LAYER_ID]: { ramp: 'redGreen', opacity: 190 },
   })
   const updateSymbology = (id, patch) =>
@@ -204,6 +226,7 @@ export default function MapView() {
     suitability: { min: 0, max: 100 },
     slope: { min: 0, max: 100 },
     landcover: { min: 0, max: 100 },
+    transmission: { min: 0, max: 100 },
     [LIVE_LAYER_ID]: { min: 0, max: 100 },
   })
   const updateRange = (id, range) => setRangeByLayer((prev) => ({ ...prev, [id]: range }))
@@ -215,6 +238,7 @@ export default function MapView() {
     suitability: null,
     slope: null,
     landcover: null,
+    transmission: null,
     [LIVE_LAYER_ID]: null,
   })
   useEffect(() => {
@@ -231,7 +255,7 @@ export default function MapView() {
   // layers were generated for); `draftAoi` is the rectangle following the
   // cursor mid-drag; `drawArmed` is whether the next drag draws instead of
   // panning.
-  const [aoi, setAoi] = useState(PILOT_AOI)
+  const [aoi, setAoi] = useState(initial.aoi)
   const [draftAoi, setDraftAoi] = useState(null)
   const [drawArmed, setDrawArmed] = useState(false)
   const isPilotAoi = sameBbox(aoi, PILOT_AOI)
@@ -266,9 +290,13 @@ export default function MapView() {
   }, [drawArmed])
 
   // ── B3: analysis parameters + request state ────────────────────────────
-  const [slopeMaxDeg, setSlopeMaxDeg] = useState(DEFAULT_SLOPE_MAX_DEG)
-  const [slopeWeight, setSlopeWeight] = useState(DEFAULT_SLOPE_WEIGHT)
-  const [resolution, setResolution] = useState(DEFAULT_RESOLUTION)
+  const [slopeMaxDeg, setSlopeMaxDeg] = useState(initial.slopeMaxDeg)
+  const [weights, setWeights] = useState(initial.weights)
+  const updateWeight = (key, value) =>
+    setWeights((prev) => ({ ...prev, [key]: value }))
+  const [transmissionMaxKm, setTransmissionMaxKm] = useState(initial.transmissionMaxKm)
+  const [applyExclusions, setApplyExclusions] = useState(initial.applyExclusions)
+  const [resolution, setResolution] = useState(initial.resolution)
   const [status, setStatus] = useState({ state: 'idle' })
   const [elapsedSec, setElapsedSec] = useState(0)
   const [apiOnline, setApiOnline] = useState(null) // null = not checked yet
@@ -282,8 +310,16 @@ export default function MapView() {
   // say "parameters changed — re-run" instead of silently showing a live
   // layer that no longer matches the controls above it.
   const paramsSignature = useMemo(
-    () => JSON.stringify([aoi, slopeMaxDeg, slopeWeight, resolution]),
-    [aoi, slopeMaxDeg, slopeWeight, resolution]
+    () =>
+      JSON.stringify([
+        aoi,
+        slopeMaxDeg,
+        weights,
+        transmissionMaxKm,
+        applyExclusions,
+        resolution,
+      ]),
+    [aoi, slopeMaxDeg, weights, transmissionMaxKm, applyExclusions, resolution]
   )
   const [lastRunSignature, setLastRunSignature] = useState(null)
   const paramsDirty = lastRunSignature !== null && lastRunSignature !== paramsSignature
@@ -293,6 +329,30 @@ export default function MapView() {
     checkHealth(controller.signal).then(setApiOnline)
     return () => controller.abort()
   }, [])
+
+  // C3 — keep the query string in step with the controls. Runs on every
+  // change (replaceState, so it doesn't flood the back button); the live
+  // layer is excluded from the `layer` param since a link naming it would
+  // open on an empty layer.
+  useEffect(() => {
+    writeUrlState({
+      aoi,
+      slopeMaxDeg,
+      weights,
+      transmissionMaxKm,
+      applyExclusions,
+      resolution,
+      layer: activeRasterLayer,
+    })
+  }, [
+    aoi,
+    slopeMaxDeg,
+    weights,
+    transmissionMaxKm,
+    applyExclusions,
+    resolution,
+    activeRasterLayer,
+  ])
 
   // Elapsed counter — the whole point of showing it is that a live run is
   // seconds of real network + geoprocessing, unlike every other control in
@@ -318,7 +378,15 @@ export default function MapView() {
 
     try {
       const geojson = await analyze(
-        { bbox: aoi, slopeMaxDeg, slopeWeight, gridCols: cols, gridRows: rows },
+        {
+          bbox: aoi,
+          slopeMaxDeg,
+          weights,
+          transmissionMaxKm,
+          applyExclusions,
+          gridCols: cols,
+          gridRows: rows,
+        },
         controller.signal
       )
       const features = geojson.features ?? []
@@ -337,8 +405,11 @@ export default function MapView() {
       setLastRunSignature(signature)
       setStatus({
         state: 'done',
-        cellCount: features.length,
-        meanScore: meanScoreOf(features),
+        cellCount: geojson.metadata?.cell_count ?? features.length,
+        // Prefer the server's own mean — it's computed over the full result
+        // before rounding for display, and it's what the pipeline prints.
+        meanScore: geojson.metadata?.mean_score ?? meanScoreOf(features),
+        metadata: geojson.metadata,
       })
       mapRef.current?.fitBounds(bboxToLngLatBounds(aoi), { padding: 60, duration: 700 })
     } catch (err) {
@@ -354,7 +425,15 @@ export default function MapView() {
     } finally {
       if (abortRef.current === controller) abortRef.current = null
     }
-  }, [aoi, slopeMaxDeg, slopeWeight, resolution, paramsSignature])
+  }, [
+    aoi,
+    slopeMaxDeg,
+    weights,
+    transmissionMaxKm,
+    applyExclusions,
+    resolution,
+    paramsSignature,
+  ])
 
   const cancelAnalysis = () => abortRef.current?.abort()
 
@@ -478,6 +557,17 @@ export default function MapView() {
     }
 
     map.on('style.load', addOverlaySourcesAndLayers)
+
+    // C3 — a link carrying an AOI should open looking at it. The map's
+    // constructor center/zoom stays pinned to the pilot area (it's the right
+    // default for a bare visit), so this only fires when the URL asked for
+    // somewhere else. `once` because a basemap switch re-fires style.load and
+    // shouldn't yank the user back to the link's viewport.
+    if (!sameBbox(initial.aoi, PILOT_AOI)) {
+      map.once('load', () => {
+        map.fitBounds(bboxToLngLatBounds(initial.aoi), { padding: 60, duration: 0 })
+      })
+    }
 
     return () => {
       map.remove()
@@ -603,9 +693,16 @@ export default function MapView() {
   const activeFeatures = activeRasterLayer ? featuresByLayer[activeRasterLayer] : null
 
   // The live layer only becomes selectable once a run has produced one.
-  const radioLayers = RASTER_IDS.filter(
-    (id) => id !== LIVE_LAYER_ID || featuresByLayer[LIVE_LAYER_ID] !== null
-  ).map((id) => ({ id, label: RASTER_CONFIG[id].label }))
+  const radioLayers = RASTER_IDS.filter((id) => {
+    const features = featuresByLayer[id]
+    // The live layer only appears once a run has produced one.
+    if (id === LIVE_LAYER_ID) return features !== null
+    // A baked layer whose file 404s (transmission_score.geojson before
+    // regenerate_baked_layers.py has been run) resolves to an empty array —
+    // hide it rather than offering a layer that renders nothing. null still
+    // means "in flight", so layers stay listed while loading.
+    return features === null || features.length > 0
+  }).map((id) => ({ id, label: RASTER_CONFIG[id].label }))
 
   const rasterControls = activeRasterLayer && (
     <div style={{ marginTop: 4 }}>
@@ -702,8 +799,12 @@ export default function MapView() {
         onResetAoi={resetAoi}
         slopeMaxDeg={slopeMaxDeg}
         onSlopeMaxDegChange={setSlopeMaxDeg}
-        slopeWeight={slopeWeight}
-        onSlopeWeightChange={setSlopeWeight}
+        weights={weights}
+        onWeightChange={updateWeight}
+        transmissionMaxKm={transmissionMaxKm}
+        onTransmissionMaxKmChange={setTransmissionMaxKm}
+        applyExclusions={applyExclusions}
+        onApplyExclusionsChange={setApplyExclusions}
         resolution={resolution}
         onResolutionChange={setResolution}
         onRun={runAnalysis}

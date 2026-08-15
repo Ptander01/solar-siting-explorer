@@ -1,7 +1,15 @@
 """
 T1 + T2: real transmission-line data (replacing the M2 placeholder lines)
-and real protected-land exclusions (folded into the M5 suitability score
-as an actual scoring factor, not just a display layer).
+and real protected-land exclusions.
+
+    SUPERSEDED — use regenerate_baked_layers.py instead.
+
+    Note the gap this script left, since it's the one the write-up got
+    wrong: it fetches HIFLD transmission lines and writes them out as a
+    *display* layer, but the only thing it folds into the score is the
+    PAD-US exclusion. Distance to transmission was never scored anywhere.
+    That criterion now exists for real in backend/suitability.py, and
+    regenerate_baked_layers.py rebuilds every layer through it in one pass.
 
 Data sources — both verified public, no token/login required:
   - HIFLD Electric Power Transmission Lines

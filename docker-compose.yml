@@ -21,6 +21,14 @@ services:
     # sanity check in backend/README.md.
     ports:
       - "8000:8000"
+    environment:
+      # C1 — SRTM tiles are cached here between requests. SRTM is an
+      # immutable product, so a named volume (rather than a bind mount or a
+      # container-local path) is the right fit: it survives rebuilds, needs
+      # no host directory, and there's nothing to invalidate.
+      SSE_CACHE_DIR: /cache/dem
+    volumes:
+      - dem-cache:/cache/dem
 
   web:
     build: .
@@ -31,3 +39,6 @@ services:
     # already surfaces "API not reachable" for exactly this window).
     depends_on:
       - api
+
+volumes:
+  dem-cache:

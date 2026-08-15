@@ -44,7 +44,15 @@ export async function checkHealth(signal) {
  * deck.gl layer, histogram, and tooltip all render it unchanged.
  */
 export async function analyze(
-  { bbox, slopeMaxDeg, slopeWeight, gridCols, gridRows },
+  {
+    bbox,
+    slopeMaxDeg,
+    weights,
+    transmissionMaxKm,
+    applyExclusions,
+    gridCols,
+    gridRows,
+  },
   signal
 ) {
   const res = await fetch(`${API_BASE}/analyze`, {
@@ -53,11 +61,16 @@ export async function analyze(
     body: JSON.stringify({
       bbox,
       slope_max_deg: slopeMaxDeg,
-      slope_weight: slopeWeight,
-      // The endpoint takes both weights independently, but exposing two
-      // sliders that can sum to anything makes the resulting 0-100 score
-      // meaningless. One slider, and the complement is derived here.
-      landcover_weight: Number((1 - slopeWeight).toFixed(3)),
+      // Weights go over the wire raw. run_analysis() normalizes them to sum
+      // to 1 and echoes the normalized values back in metadata.weights, so
+      // the UI can present three independent 0-100 sliders (which is how
+      // people actually think about relative priorities) without either side
+      // having to agree on a convention first.
+      slope_weight: weights.slope,
+      landcover_weight: weights.landcover,
+      transmission_weight: weights.transmission,
+      transmission_max_km: transmissionMaxKm,
+      apply_exclusions: applyExclusions,
       grid_cols: gridCols,
       grid_rows: gridRows,
     }),

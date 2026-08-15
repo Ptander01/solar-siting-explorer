@@ -1,5 +1,5 @@
-// B3 — controls for running the real suitability pipeline on demand against
-// a user-drawn AOI, via the FastAPI /analyze endpoint from B1.
+// B3/C2/C3 — controls for running the real suitability pipeline on demand
+// against a user-drawn AOI, via the FastAPI /analyze endpoint.
 //
 // Lives in its own glass panel on the right rather than inside LayersPanel:
 // the layers panel is already tall (radio pills + checkboxes + ramp +
@@ -13,12 +13,14 @@
 // explicit Run button (rather than sliders that fire on change), the elapsed
 // timer, and the "parameters changed since last run" hint.
 
+import { useState } from 'react'
 import { MAX_AOI_DEG2, bboxAreaDeg2, formatBbox } from '../lib/bboxDraw.js'
+import { currentShareUrl } from '../lib/urlState.js'
 
 // Grid resolution presets. "Standard" matches GRID_COLS/GRID_ROWS in
-// pipeline/m5_suitability_score.py, so a live run over the pilot AOI is
+// pipeline/regenerate_baked_layers.py, so a live run over the pilot AOI is
 // directly comparable to the pre-baked layer. Coarser is genuinely useful
-// while iterating on weights — _grid_average() in backend/suitability.py is
+// while iterating on weights — _grid_cells() in backend/suitability.py is
 // an O(rows x cols) Python loop, so cell count drives most of the
 // non-network time.
 export const RESOLUTIONS = {
@@ -27,6 +29,13 @@ export const RESOLUTIONS = {
   fine: { label: 'Fine — 216 × 180', cols: 216, rows: 180 },
 }
 
+// The three scored criteria, in the order they appear as sliders.
+const CRITERIA = [
+  { key: 'slope', label: 'Slope' },
+  { key: 'landcover', label: 'Land cover' },
+  { key: 'transmission', label: 'Transmission' },
+]
+
 function StatusLine({ status, elapsedSec }) {
   if (status.state === 'running') {
     return (
@@ -34,22 +43,27 @@ function StatusLine({ status, elapsedSec }) {
         <span className="analysis-spinner" />
         Running… {elapsedSec}s
         <div className="analysis-status-note">
-          Fetching SRTM tiles and WorldCover, then scoring the grid.
+          Fetching elevation and land cover, then scoring the grid.
         </div>
       </div>
     )
   }
   if (status.state === 'error') {
-    return (
-      <div className="analysis-status analysis-status--error">
-        {status.message}
-      </div>
-    )
+    return <div className="analysis-status analysis-status--error">{status.message}</div>
   }
   if (status.state === 'done') {
+    const md = status.metadata ?? {}
     return (
       <div className="analysis-status analysis-status--ok">
         {status.cellCount.toLocaleString()} cells · mean score {status.meanScore}
+        <div className="analysis-status-note">
+          {md.transmission_lines_found === 0
+            ? 'No transmission lines within the cutoff — that criterion scored 0 everywhere.'
+            : md.transmission_lines_found
+              ? `${md.transmission_lines_found} transmission segments in range`
+              : 'Transmission criterion not applied (weight 0)'}
+          {md.excluded_cells > 0 && ` · ${md.excluded_cells.toLocaleString()} cells excluded as protected`}
+        </div>
       </div>
     )
   }
@@ -65,8 +79,12 @@ export default function AnalysisPanel({
   onResetAoi,
   slopeMaxDeg,
   onSlopeMaxDegChange,
-  slopeWeight,
-  onSlopeWeightChange,
+  weights,
+  onWeightChange,
+  transmissionMaxKm,
+  onTransmissionMaxKmChange,
+  applyExclusions,
+  onApplyExclusionsChange,
   resolution,
   onResolutionChange,
   onRun,
@@ -87,6 +105,26 @@ export default function AnalysisPanel({
   const tooLarge = area > MAX_AOI_DEG2
   const running = status.state === 'running'
   const canRun = apiOnline !== false && !tooLarge && !running && !drafting
+
+  // Sliders are raw 0-100 priorities; the percentages shown are the
+  // normalized shares the API will actually apply, so what's on screen
+  // matches what comes back in metadata.weights.
+  const weightTotal = CRITERIA.reduce((sum, c) => sum + weights[c.key], 0)
+  const share = (key) =>
+    weightTotal > 0 ? Math.round((weights[key] / weightTotal) * 100) : 0
+
+  const [copied, setCopied] = useState(false)
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(currentShareUrl())
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1600)
+    } catch {
+      /* clipboard blocked (insecure origin / denied permission) — the URL
+         bar already holds the same link, so this is a convenience, not the
+         only way to get it. */
+    }
+  }
 
   return (
     <div
@@ -145,6 +183,31 @@ export default function AnalysisPanel({
 
       <hr className="glass-divider" />
 
+      <div className="glass-section-label">Criterion weights</div>
+      {CRITERIA.map(({ key, label }) => (
+        <div key={key} style={{ marginBottom: 8 }}>
+          <div className="glass-section-label" style={{ marginBottom: 4 }}>
+            {label} — {share(key)}%
+          </div>
+          <input
+            type="range"
+            className="glass-slider"
+            min={0}
+            max={100}
+            step={5}
+            value={weights[key]}
+            onChange={(e) => onWeightChange(key, Number(e.target.value))}
+          />
+        </div>
+      ))}
+      {weightTotal === 0 && (
+        <div className="analysis-status analysis-status--error">
+          At least one criterion needs a non-zero weight.
+        </div>
+      )}
+
+      <hr className="glass-divider" />
+
       <div className="glass-section-label">Max usable slope ({slopeMaxDeg}°)</div>
       <input
         type="range"
@@ -157,18 +220,30 @@ export default function AnalysisPanel({
       />
 
       <div className="glass-section-label" style={{ marginTop: 12 }}>
-        Weighting — slope {Math.round(slopeWeight * 100)}% / land cover{' '}
-        {Math.round((1 - slopeWeight) * 100)}%
+        Transmission cutoff ({transmissionMaxKm} km)
       </div>
       <input
         type="range"
         className="glass-slider"
-        min={0}
-        max={100}
-        step={5}
-        value={Math.round(slopeWeight * 100)}
-        onChange={(e) => onSlopeWeightChange(Number(e.target.value) / 100)}
+        min={1}
+        max={50}
+        step={1}
+        value={transmissionMaxKm}
+        disabled={weights.transmission === 0}
+        style={{ opacity: weights.transmission === 0 ? 0.4 : 1 }}
+        onChange={(e) => onTransmissionMaxKmChange(Number(e.target.value))}
       />
+
+      <div
+        className={`glass-checkbox-row${applyExclusions ? ' glass-checkbox-row--on' : ''}`}
+        onClick={() => onApplyExclusionsChange(!applyExclusions)}
+        style={{ marginTop: 10 }}
+      >
+        <span className="glass-checkbox-box">
+          <span className="glass-checkbox-check" />
+        </span>
+        Exclude protected land
+      </div>
 
       <div className="glass-section-label" style={{ marginTop: 12 }}>Grid resolution</div>
       <select
@@ -187,8 +262,11 @@ export default function AnalysisPanel({
         <button
           className="glass-btn glass-btn--primary"
           onClick={onRun}
-          disabled={!canRun}
-          style={{ opacity: canRun ? 1 : 0.45, cursor: canRun ? 'pointer' : 'not-allowed' }}
+          disabled={!canRun || weightTotal === 0}
+          style={{
+            opacity: canRun && weightTotal > 0 ? 1 : 0.45,
+            cursor: canRun && weightTotal > 0 ? 'pointer' : 'not-allowed',
+          }}
         >
           {running ? 'Running…' : 'Run analysis'}
         </button>
@@ -207,6 +285,14 @@ export default function AnalysisPanel({
 
       <div style={{ marginTop: 8 }}>
         <StatusLine status={status} elapsedSec={elapsedSec} />
+      </div>
+
+      <hr className="glass-divider" />
+      <button className="glass-btn" onClick={copyLink} style={{ width: '100%' }}>
+        {copied ? 'Link copied' : 'Copy link to this analysis'}
+      </button>
+      <div className="analysis-status-note" style={{ marginTop: 4 }}>
+        The URL holds the AOI and every parameter above.
       </div>
     </div>
   )

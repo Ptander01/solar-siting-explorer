@@ -1,6 +1,16 @@
 """
 M5 (core): continuous multi-criteria suitability score for the pilot AOI.
 
+    SUPERSEDED — use regenerate_baked_layers.py instead.
+
+    This script scores slope and land cover only. Transmission proximity is
+    now a real scored criterion and the protected-land exclusion is applied
+    in the same pass, both of which live in backend/suitability.py (the one
+    implementation the live API also uses). Running this will overwrite
+    public/data/suitability_score.geojson with the older two-criterion
+    numbers. Kept because it documents how the pipeline was built up
+    milestone by milestone, not because it's the current path.
+
 Grid resolution note: GRID_COLS/GRID_ROWS below control the size of the
 score "squares" on the map — not the underlying data resolution (the DEM
 is real 30m SRTM1, land cover is real 10m WorldCover; both stay at native

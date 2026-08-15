@@ -24,7 +24,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from suitability import run_analysis, AOITooLargeError
+from suitability import (
+    run_analysis,
+    AOITooLargeError,
+    DEFAULT_TRANSMISSION_MAX_KM,
+)
 
 app = FastAPI(title="Solar Siting Explorer — Suitability API")
 
@@ -49,6 +53,14 @@ class AnalyzeRequest(BaseModel):
     slope_max_deg: float = 10.0
     slope_weight: float = 0.6
     landcover_weight: float = 0.4
+    # Weights are relative and get normalized to sum to 1 in run_analysis, so
+    # these are priorities rather than fractions. transmission_weight
+    # defaults to 0 so an older client that doesn't know about the criterion
+    # gets exactly the previous two-criterion behaviour, and the extra
+    # ArcGIS round trip is skipped rather than fetched and multiplied by zero.
+    transmission_weight: float = 0.0
+    transmission_max_km: float = DEFAULT_TRANSMISSION_MAX_KM
+    apply_exclusions: bool = True
     grid_cols: int = 144
     grid_rows: int = 120
 
@@ -66,6 +78,9 @@ def analyze(req: AnalyzeRequest):
             slope_max_deg=req.slope_max_deg,
             slope_weight=req.slope_weight,
             landcover_weight=req.landcover_weight,
+            transmission_weight=req.transmission_weight,
+            transmission_max_km=req.transmission_max_km,
+            apply_exclusions=req.apply_exclusions,
             grid_cols=req.grid_cols,
             grid_rows=req.grid_rows,
         )
