@@ -503,13 +503,24 @@ export default function MapView() {
         const activeId = activeRasterLayerRef.current
         const label = activeId ? RASTER_CONFIG[activeId].tooltipLabel : 'Score'
         const props = object.properties
-        // slope_deg/landcover_class are the raw inputs behind the score —
-        // added by the pipeline alongside the 144x120 grid change. Guarded
-        // with typeof/truthy checks so cached GeoJSON from before that
-        // change (not yet re-run) doesn't show "undefined".
+        // The raw inputs behind the score, not the sub-scores — "2.5°" and
+        // "3.2 km from a line" say why a cell scored what it did in a way
+        // "slope_score 75" doesn't.
+        //
+        // Every field is guarded, because the properties available depend on
+        // which vintage of data produced the feature: GeoJSON baked before
+        // the transmission criterion existed carries only score/slope/land
+        // cover, and a live run with the transmission weight at 0 skips the
+        // HIFLD query entirely and returns a null distance. Unguarded, those
+        // cases render "undefined" and "null km".
         const lines = [`${label}: ${props.score}/100`]
         if (typeof props.slope_deg === 'number') lines.push(`Slope: ${props.slope_deg}°`)
         if (props.landcover_class) lines.push(`Land cover: ${props.landcover_class}`)
+        if (typeof props.transmission_km === 'number') {
+          lines.push(`Transmission: ${props.transmission_km} km`)
+        }
+        // A cell cut to 5% of its score looks inexplicably bad otherwise.
+        if (props.excluded) lines.push('<em>Protected — score excluded</em>')
         return {
           html: lines.join('<br/>'),
           style: DECK_TOOLTIP_STYLES[themeRef.current],
