@@ -63,6 +63,7 @@ export default function LayersPanel({
   checkboxLayers,
   onToggle,
   extra,
+  note,
   collapsed,
   onToggleCollapse,
 }) {
@@ -176,6 +177,11 @@ export default function LayersPanel({
               {layer.label}
             </button>
           ))}
+          {note && (
+            <div className="analysis-status-note" style={{ marginTop: 4, paddingLeft: 10 }}>
+              {note}
+            </div>
+          )}
         </div>
       )}
 

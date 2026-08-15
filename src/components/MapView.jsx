@@ -13,7 +13,7 @@ import {
   bboxToLngLatBounds,
   bindBboxDraw,
 } from '../lib/bboxDraw.js'
-import { analyze, checkHealth } from '../lib/api.js'
+import { analyze, checkHealth, fetchContext } from '../lib/api.js'
 import { readUrlState, writeUrlState } from '../lib/urlState.js'
 import { usePanelCollapse } from '../lib/usePanelCollapse.js'
 
@@ -134,6 +134,15 @@ const BAKED_RASTER_IDS = RASTER_IDS.filter((id) => RASTER_CONFIG[id].path)
 // but left the transmission lines buried.
 const DECK_SCORE_BEFORE_ID = 'protected-areas-fill'
 
+// Below this zoom a viewport covers more ground than /context will serve (and
+// more than is legible drawn on a map). The pre-baked pilot layers stay on
+// screen instead — which is why they're kept rather than deleted: zoomed out,
+// or with the API asleep, the map still shows something real.
+const CONTEXT_MIN_ZOOM = 8
+// Long enough that a continuous pan or a pinch-zoom fires one request at the
+// end rather than a dozen along the way.
+const CONTEXT_DEBOUNCE_MS = 450
+
 // AOI rectangle colors, per theme. The committed AOI is deliberately
 // achromatic (white on dark, near-black on light) so it doesn't read as
 // another data layer next to the amber transmission lines and green
@@ -182,6 +191,8 @@ export default function MapView() {
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const overlayRef = useRef(null)
+  // Read inside the map-init effect's style handler, which is bound once.
+  const applyContextRef = useRef(() => {})
 
   // Both floating panels fold away, remembered per-browser. Not in the URL —
   // see usePanelCollapse.js for why.
@@ -372,6 +383,75 @@ export default function MapView() {
     checkHealth(controller.signal).then(setApiOnline)
     return () => controller.abort()
   }, [])
+
+  // Transmission lines and protected areas for wherever you're looking.
+  // Keyed on the settled viewport rather than the drawn AOI so the
+  // infrastructure is visible *before* you decide where to draw — which is
+  // the whole point, since it's what the score is measured against.
+  //
+  // The fetched features replace the data on the existing MapLibre sources
+  // rather than creating new layers, so styling, click popups, the visibility
+  // toggles and the paint order all keep working untouched.
+  const contextRef = useRef(null)
+  const [contextNote, setContextNote] = useState(null)
+
+  const applyContext = useCallback((map, ctx) => {
+    if (!map || !ctx) return
+    map.getSource('transmission-lines')?.setData(ctx.transmission)
+    map.getSource('protected-areas')?.setData(ctx.protected)
+  }, [])
+
+  useEffect(() => {
+    applyContextRef.current = applyContext
+  }, [applyContext])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || apiOnline === false) return
+
+    let timer = null
+    let controller = null
+
+    const load = () => {
+      if (map.getZoom() < CONTEXT_MIN_ZOOM) {
+        setContextNote('Zoom in to load infrastructure for this area')
+        return
+      }
+      const b = map.getBounds()
+      const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
+      controller?.abort()
+      controller = new AbortController()
+      fetchContext(bbox, controller.signal)
+        .then((ctx) => {
+          contextRef.current = ctx
+          applyContext(map, ctx)
+          setContextNote(
+            ctx.metadata?.truncated
+              ? 'Too many features here to draw them all — zoom in for the full picture'
+              : null
+          )
+        })
+        .catch((err) => {
+          if (controller.signal.aborted) return
+          // A failure here leaves the previous features on screen, which is
+          // the right outcome: a stale-but-real overlay beats a blank map.
+          setContextNote('Could not load infrastructure for this view')
+        })
+    }
+
+    const schedule = () => {
+      clearTimeout(timer)
+      timer = setTimeout(load, CONTEXT_DEBOUNCE_MS)
+    }
+
+    map.on('moveend', schedule)
+    schedule()
+    return () => {
+      clearTimeout(timer)
+      controller?.abort()
+      map.off('moveend', schedule)
+    }
+  }, [apiOnline, applyContext])
 
   // C3 — keep the query string in step with the controls. Runs on every
   // change (replaceState, so it doesn't flood the back button); the live
@@ -585,6 +665,11 @@ export default function MapView() {
           layout: { visibility: layersVisibleRef.current.lines ? 'visible' : 'none' },
         })
       }
+
+      // setStyle rebuilds these sources from the static pilot files, which
+      // would silently snap the map back to Butler County's infrastructure
+      // after a basemap swap. Re-apply whatever was last fetched.
+      if (contextRef.current) applyContextRef.current(map, contextRef.current)
 
       // Lets the deck effect apply its beforeId now that the target exists.
       // A no-op re-render on the repeat calls from 'idle'.
@@ -949,6 +1034,7 @@ export default function MapView() {
           },
         ]}
         onToggle={toggleLayer}
+        note={contextNote}
         extra={rasterControls}
         collapsed={layersCollapsed}
         onToggleCollapse={toggleLayersCollapsed}

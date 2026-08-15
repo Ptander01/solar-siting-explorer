@@ -96,6 +96,13 @@ DEFAULT_TRANSMISSION_MAX_KM = 10.0
 # so an over-cap AOI is rejected before the request is made.
 MAX_AOI_DEG2 = 1.0
 
+# The equivalent cap for /context, which only fetches vector features for
+# display — no rasters, no scoring — so it can afford a wider window than an
+# analysis run. Still bounded: these are national datasets, and a request for
+# the whole country would return tens of megabytes and help nobody. The
+# frontend also refuses to ask below a zoom floor.
+MAX_CONTEXT_DEG2 = 6.0
+
 # C1 — where fetched SRTM tiles live between requests. Overridable so the
 # container can mount a volume at a known path (see docker-compose.yml);
 # defaults under the system temp dir so a bare `uvicorn main:app` still works
@@ -586,3 +593,52 @@ def run_analysis(
         "grid": {"cols": grid_cols, "rows": grid_rows},
     }
     return result
+
+
+# ── Map context (display-only vector layers) ───────────────────────────────
+
+def get_context_layers(bbox, transmission_pad_km=DEFAULT_TRANSMISSION_MAX_KM):
+    """Transmission lines and protected areas for an arbitrary window, for
+    the map to *draw*. No scoring, no rasters.
+
+    This exists because the pre-baked public/data/*.geojson files are clipped
+    to the pilot AOI, so drawing a study area anywhere else produced a score
+    claiming "2 km to the nearest line" over a map with no lines on it. The
+    analysis was right and the map was empty — a bad combination, since the
+    map is the only thing most people will judge it by.
+
+    Deliberately shares _query_arcgis() and _buffered_bbox() with the scoring
+    path rather than reimplementing the queries, so what gets drawn is the
+    same data the scoring measured against. The transmission query uses the
+    same padding for the same reason it does there: a line just outside the
+    window still matters, and seeing it explains why nearby cells score well.
+    """
+    west, south, east, north = bbox
+    if east <= west or north <= south:
+        raise ValueError("bbox must be [west, south, east, north] with east > west and north > south")
+
+    area_deg2 = (east - west) * (north - south)
+    if area_deg2 > MAX_CONTEXT_DEG2:
+        raise AOITooLargeError(
+            f"Requested window is {area_deg2:.2f} sq degrees — max for map context is "
+            f"{MAX_CONTEXT_DEG2}. Zoom in."
+        )
+
+    lines = _query_arcgis(TRANSMISSION_URL, _buffered_bbox(bbox, transmission_pad_km))
+    protected = _query_arcgis(PROTECTED_URL, bbox)
+
+    return {
+        "transmission": lines,
+        "protected": protected,
+        "metadata": {
+            "bbox": list(bbox),
+            "transmission_count": len(lines.get("features", [])),
+            "protected_count": len(protected.get("features", [])),
+            # ArcGIS caps how many features one query returns and flags it
+            # here. Passed through so the UI can admit the view is partial
+            # rather than quietly drawing a subset as if it were everything.
+            "truncated": bool(
+                lines.get("exceededTransferLimit") or protected.get("exceededTransferLimit")
+            ),
+        },
+    }

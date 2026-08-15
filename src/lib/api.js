@@ -80,3 +80,19 @@ export async function analyze(
   if (!res.ok) throw new Error(await errorDetail(res))
   return res.json()
 }
+
+/**
+ * GET /context — transmission lines and protected areas for a map window.
+ *
+ * Display only: no scoring, no rasters, so it returns in about a second and
+ * can follow the viewport as you pan. Exists because the pre-baked
+ * public/data files are clipped to the pilot AOI, which meant drawing a study
+ * area anywhere else produced a score measured against infrastructure the map
+ * couldn't show you.
+ */
+export async function fetchContext(bbox, signal) {
+  const query = bbox.map((v) => v.toFixed(4)).join(',')
+  const res = await fetch(`${API_BASE}/context?bbox=${encodeURIComponent(query)}`, { signal })
+  if (!res.ok) throw new Error(await errorDetail(res))
+  return res.json()
+}

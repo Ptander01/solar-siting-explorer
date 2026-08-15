@@ -22,12 +22,13 @@ already-known result (see README.md for what to expect):
 
 import os
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from suitability import (
     run_analysis,
+    get_context_layers,
     AOITooLargeError,
     DEFAULT_TRANSMISSION_MAX_KM,
 )
@@ -84,6 +85,31 @@ class AnalyzeRequest(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/context")
+def context(
+    bbox: str = Query(..., description="west,south,east,north in decimal degrees"),
+):
+    """Vector features for the current map view, so the infrastructure the
+    scoring measures against is actually visible when you pan away from the
+    pre-baked pilot area. GET (not POST) because it's a pure read keyed on a
+    bbox — cacheable, and easy to poke at in a browser."""
+    try:
+        parts = [float(v) for v in bbox.split(",")]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bbox must be four comma-separated numbers")
+    if len(parts) != 4:
+        raise HTTPException(status_code=400, detail="bbox must be four comma-separated numbers")
+
+    try:
+        return get_context_layers(parts)
+    except AOITooLargeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.post("/analyze")
