@@ -1,9 +1,33 @@
-# Single service for now (M0-M2). Once the Python pipeline (pipeline/) is
-# doing real work at M3+, add a `pipeline` service here — keep it as a
-# separate service, not baked into the frontend image, so the geoprocessing
-# step stays reproducible independent of the frontend build.
+# B4 — the two halves of the app, running together.
+#
+#   docker compose up --build     ->  http://localhost:8080
+#
+# `web` is the built static site behind nginx, which also reverse-proxies
+# /api to `api` over compose's internal network (see nginx.conf). That's why
+# the browser only ever sees one origin, and why no CORS configuration is
+# involved in the Docker path.
+#
+# The Python pipeline in pipeline/ is deliberately still NOT a service here:
+# it's a one-shot geoprocessing step that bakes GeoJSON into public/data/,
+# not a long-running process, so it belongs in a `docker run` invocation (or
+# a local venv) rather than something `compose up` starts and leaves idle.
+# `api` is the piece of that same geoprocessing that *is* long-running,
+# because it answers requests on demand.
 services:
+  api:
+    build: ./backend
+    # Published on the host as well as being reachable at api:8000 inside
+    # the network, so the endpoint can still be curl'd directly for the
+    # sanity check in backend/README.md.
+    ports:
+      - "8000:8000"
+
   web:
     build: .
     ports:
       - "8080:80"
+    # Only orders startup — nginx will still return 502 on /api until the
+    # API's healthcheck passes, which is the honest behavior (the frontend
+    # already surfaces "API not reachable" for exactly this window).
+    depends_on:
+      - api

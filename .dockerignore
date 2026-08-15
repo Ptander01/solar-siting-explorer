@@ -1,0 +1,18 @@
+# Keep the build context small and the build reproducible. node_modules in
+# particular must not be copied in — the image installs its own against the
+# lockfile, and a host-built tree (macOS arm64 binaries) would be both huge
+# and wrong for a linux image.
+node_modules/
+dist/
+.git/
+.gitignore
+
+# The Python side has its own build context (backend/), so it doesn't belong
+# in the frontend image at all.
+backend/
+pipeline/
+**/venv/
+**/__pycache__/
+
+*.md
+!README.md

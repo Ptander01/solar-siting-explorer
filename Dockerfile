@@ -1,15 +1,23 @@
 # Multi-stage build: build the static site, serve it with nginx.
-# This is the M0 checkpoint — `docker build -t solar-siting-explorer .`
-# then `docker run -p 8080:80 solar-siting-explorer` should show the blank
-# App.jsx page at localhost:8080.
+#
+# Since B4 the nginx stage also reverse-proxies /api to the `api` service
+# (see nginx.conf and docker-compose.yml), so the browser talks to a single
+# origin for both the app and the suitability API. Running this image on its
+# own still works — the map and all three pre-baked score layers render — but
+# the "Run analysis" button needs the API container, so `docker compose up`
+# is the intended entry point.
 
 FROM node:20-slim AS build
 WORKDIR /app
-COPY package.json ./
-RUN npm install
+# Lockfile included so the image installs the same tree the app was
+# developed against; npm ci is the reproducible install (and errors out
+# rather than silently drifting if the lockfile is stale).
+COPY package.json package-lock.json ./
+RUN npm ci
 COPY . .
 RUN npm run build
 
 FROM nginx:alpine
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80

@@ -1,11 +1,19 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import { MapboxOverlay } from '@deck.gl/mapbox'
-import { GeoJsonLayer } from '@deck.gl/layers'
+import { GeoJsonLayer, PolygonLayer } from '@deck.gl/layers'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import LayersPanel from './LayersPanel.jsx'
 import ScoreHistogram from './ScoreHistogram.jsx'
+import AnalysisPanel, { RESOLUTIONS } from './AnalysisPanel.jsx'
 import { RAMPS, colorForScore, rampCssGradient } from '../lib/colorRamps.js'
+import {
+  PILOT_AOI,
+  bboxToRing,
+  bboxToLngLatBounds,
+  bindBboxDraw,
+} from '../lib/bboxDraw.js'
+import { analyze, checkHealth } from '../lib/api.js'
 
 // Basemap styles. "streets" has a dark and a light variant so it tracks
 // the UI theme (light UI over the dark vector basemap looked mismatched);
@@ -71,19 +79,53 @@ const DECK_TOOLTIP_STYLES = {
   },
 }
 
-// The three score "rasters" — only one renders at a time (see LayersPanel).
+// The score "rasters" — only one renders at a time (see LayersPanel).
 // Each gets its own default ramp so they stay visually distinct when you
 // flip between them.
+//
+// `live` (B3) is the odd one out: it has no `path`, because its data comes
+// from a POST /analyze response held in React state rather than a pre-baked
+// file in public/data. It's kept in this same config map (rather than
+// special-cased everywhere) so the tooltip, symbology, histogram, and
+// filter machinery all treat it exactly like the baked layers — it's only
+// filtered out of the radio list until a run has actually produced one.
+const LIVE_LAYER_ID = 'live'
 const RASTER_CONFIG = {
   suitability: { label: 'Suitability score (combined)', path: '/data/suitability_score.geojson', tooltipLabel: 'Suitability', defaultRamp: 'redGreen' },
   slope: { label: 'Slope score (input layer)', path: '/data/slope_score.geojson', tooltipLabel: 'Slope score', defaultRamp: 'blues' },
   landcover: { label: 'Land cover score (input layer)', path: '/data/landcover_score.geojson', tooltipLabel: 'Land cover score', defaultRamp: 'viridis' },
+  [LIVE_LAYER_ID]: { label: 'Live analysis (drawn AOI)', path: null, tooltipLabel: 'Suitability (live)', defaultRamp: 'redGreen' },
 }
 const RASTER_IDS = Object.keys(RASTER_CONFIG)
+const BAKED_RASTER_IDS = RASTER_IDS.filter((id) => RASTER_CONFIG[id].path)
+
+// AOI rectangle colors, per theme. The committed AOI is deliberately
+// achromatic (white on dark, near-black on light) so it doesn't read as
+// another data layer next to the amber transmission lines and green
+// protected areas; the in-progress draft borrows the UI accent instead, and
+// only exists for the duration of a drag.
+const AOI_COLORS = {
+  dark: { line: [255, 255, 255, 230], fill: [255, 255, 255, 12], draft: [245, 158, 11, 235] },
+  light: { line: [31, 41, 55, 230], fill: [31, 41, 55, 14], draft: [184, 121, 10, 235] },
+}
+
+const DEFAULT_SLOPE_MAX_DEG = 10
+const DEFAULT_SLOPE_WEIGHT = 0.6
+const DEFAULT_RESOLUTION = 'standard'
 
 function getInitialTheme() {
   if (typeof window === 'undefined') return 'dark'
   return localStorage.getItem('sse-theme') || 'dark'
+}
+
+function sameBbox(a, b) {
+  return a.length === b.length && a.every((v, i) => v === b[i])
+}
+
+function meanScoreOf(features) {
+  if (!features.length) return 0
+  const total = features.reduce((sum, f) => sum + (f.properties?.score ?? 0), 0)
+  return Number((total / features.length).toFixed(2))
 }
 
 export default function MapView() {
@@ -152,6 +194,7 @@ export default function MapView() {
     suitability: { ramp: 'redGreen', opacity: 170 },
     slope: { ramp: 'blues', opacity: 170 },
     landcover: { ramp: 'viridis', opacity: 170 },
+    [LIVE_LAYER_ID]: { ramp: 'redGreen', opacity: 190 },
   })
   const updateSymbology = (id, patch) =>
     setSymbologyByLayer((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
@@ -161,24 +204,161 @@ export default function MapView() {
     suitability: { min: 0, max: 100 },
     slope: { min: 0, max: 100 },
     landcover: { min: 0, max: 100 },
+    [LIVE_LAYER_ID]: { min: 0, max: 100 },
   })
   const updateRange = (id, range) => setRangeByLayer((prev) => ({ ...prev, [id]: range }))
 
-  // Features for all three layers, fetched upfront so switching the active
+  // Features for the baked layers, fetched upfront so switching the active
   // layer redraws its histogram instantly instead of waiting on a fetch.
+  // `live` starts null and is filled in by a /analyze response.
   const [featuresByLayer, setFeaturesByLayer] = useState({
     suitability: null,
     slope: null,
     landcover: null,
+    [LIVE_LAYER_ID]: null,
   })
   useEffect(() => {
-    RASTER_IDS.forEach((id) => {
+    BAKED_RASTER_IDS.forEach((id) => {
       fetch(RASTER_CONFIG[id].path)
         .then((r) => r.json())
         .then((geojson) => setFeaturesByLayer((prev) => ({ ...prev, [id]: geojson.features })))
         .catch(() => setFeaturesByLayer((prev) => ({ ...prev, [id]: [] })))
     })
   }, [])
+
+  // ── B2: AOI state ──────────────────────────────────────────────────────
+  // `aoi` is the committed study area (defaults to the pilot AOI the baked
+  // layers were generated for); `draftAoi` is the rectangle following the
+  // cursor mid-drag; `drawArmed` is whether the next drag draws instead of
+  // panning.
+  const [aoi, setAoi] = useState(PILOT_AOI)
+  const [draftAoi, setDraftAoi] = useState(null)
+  const [drawArmed, setDrawArmed] = useState(false)
+  const isPilotAoi = sameBbox(aoi, PILOT_AOI)
+
+  // Same once-bound-handler problem as theme/activeRasterLayer: the popup
+  // and cursor handlers in the map-init effect are registered a single time,
+  // so they need a ref to see the current draw-mode state.
+  const drawArmedRef = useRef(drawArmed)
+  useEffect(() => {
+    drawArmedRef.current = drawArmed
+  }, [drawArmed])
+
+  const toggleDraw = () => setDrawArmed((armed) => !armed)
+  const resetAoi = () => {
+    setAoi(PILOT_AOI)
+    mapRef.current?.fitBounds(bboxToLngLatBounds(PILOT_AOI), { padding: 60, duration: 700 })
+  }
+
+  // Handlers are attached only while draw mode is armed and torn down the
+  // moment it disarms, so the map pans/zooms completely normally otherwise.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !drawArmed) return
+    return bindBboxDraw(map, {
+      onDraft: setDraftAoi,
+      onCommit: (bbox) => {
+        setAoi(bbox)
+        setDrawArmed(false)
+      },
+      onCancel: () => setDrawArmed(false),
+    })
+  }, [drawArmed])
+
+  // ── B3: analysis parameters + request state ────────────────────────────
+  const [slopeMaxDeg, setSlopeMaxDeg] = useState(DEFAULT_SLOPE_MAX_DEG)
+  const [slopeWeight, setSlopeWeight] = useState(DEFAULT_SLOPE_WEIGHT)
+  const [resolution, setResolution] = useState(DEFAULT_RESOLUTION)
+  const [status, setStatus] = useState({ state: 'idle' })
+  const [elapsedSec, setElapsedSec] = useState(0)
+  const [apiOnline, setApiOnline] = useState(null) // null = not checked yet
+  const abortRef = useRef(null)
+
+  // The GeoJSON object handed straight to deck.gl for the live layer (the
+  // baked layers pass a URL string instead and let deck.gl fetch it).
+  const [liveGeojson, setLiveGeojson] = useState(null)
+
+  // Signature of the inputs the last successful run used, so the panel can
+  // say "parameters changed — re-run" instead of silently showing a live
+  // layer that no longer matches the controls above it.
+  const paramsSignature = useMemo(
+    () => JSON.stringify([aoi, slopeMaxDeg, slopeWeight, resolution]),
+    [aoi, slopeMaxDeg, slopeWeight, resolution]
+  )
+  const [lastRunSignature, setLastRunSignature] = useState(null)
+  const paramsDirty = lastRunSignature !== null && lastRunSignature !== paramsSignature
+
+  useEffect(() => {
+    const controller = new AbortController()
+    checkHealth(controller.signal).then(setApiOnline)
+    return () => controller.abort()
+  }, [])
+
+  // Elapsed counter — the whole point of showing it is that a live run is
+  // seconds of real network + geoprocessing, unlike every other control in
+  // this UI, which is instant.
+  useEffect(() => {
+    if (status.state !== 'running') return
+    setElapsedSec(0)
+    const startedAt = performance.now()
+    const id = setInterval(() => {
+      setElapsedSec(Math.round((performance.now() - startedAt) / 1000))
+    }, 1000)
+    return () => clearInterval(id)
+  }, [status.state])
+
+  const runAnalysis = useCallback(async () => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    const signature = paramsSignature
+    const { cols, rows } = RESOLUTIONS[resolution]
+    setStatus({ state: 'running' })
+
+    try {
+      const geojson = await analyze(
+        { bbox: aoi, slopeMaxDeg, slopeWeight, gridCols: cols, gridRows: rows },
+        controller.signal
+      )
+      const features = geojson.features ?? []
+      if (!features.length) {
+        setStatus({ state: 'error', message: 'The API returned no cells for this AOI.' })
+        return
+      }
+
+      setFeaturesByLayer((prev) => ({ ...prev, [LIVE_LAYER_ID]: features }))
+      setLiveGeojson(geojson)
+      // A fresh result invalidates any select-by-score filter carried over
+      // from the previous run — its score range may not even overlap.
+      updateRange(LIVE_LAYER_ID, { min: 0, max: 100 })
+      setActiveRasterLayer(LIVE_LAYER_ID)
+      setApiOnline(true)
+      setLastRunSignature(signature)
+      setStatus({
+        state: 'done',
+        cellCount: features.length,
+        meanScore: meanScoreOf(features),
+      })
+      mapRef.current?.fitBounds(bboxToLngLatBounds(aoi), { padding: 60, duration: 700 })
+    } catch (err) {
+      if (controller.signal.aborted) {
+        setStatus({ state: 'idle' })
+        return
+      }
+      // A network-level failure (as opposed to an HTTP error the API
+      // returned) usually means the server isn't running at all — reflect
+      // that in the panel's banner rather than only in this one message.
+      if (err instanceof TypeError) setApiOnline(false)
+      setStatus({ state: 'error', message: err.message })
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null
+    }
+  }, [aoi, slopeMaxDeg, slopeWeight, resolution, paramsSignature])
+
+  const cancelAnalysis = () => abortRef.current?.abort()
+
+  useEffect(() => () => abortRef.current?.abort(), [])
 
   // Map + native MapLibre layers: real transmission lines (T1) and
   // protected-area exclusions (T2), both simple enough not to need deck.gl.
@@ -196,7 +376,7 @@ export default function MapView() {
     const overlay = new MapboxOverlay({
       interleaved: true,
       layers: [],
-      getTooltip: ({ object, layer }) => {
+      getTooltip: ({ object }) => {
         if (!object) return null
         const activeId = activeRasterLayerRef.current
         const label = activeId ? RASTER_CONFIG[activeId].tooltipLabel : 'Score'
@@ -268,18 +448,25 @@ export default function MapView() {
       if (!handlersBoundRef.current) {
         handlersBoundRef.current = true
         map.on('click', 'transmission-lines-layer', (e) => {
+          // While draw mode is armed, a drag that ends over a transmission
+          // line still counts as a click — suppress the popup so drawing an
+          // AOI doesn't leave stray popups behind it.
+          if (drawArmedRef.current) return
           new maplibregl.Popup()
             .setLngLat(e.lngLat)
             .setHTML(transmissionPopupHtml(e.features[0].properties))
             .addTo(map)
         })
         map.on('mouseenter', 'transmission-lines-layer', () => {
+          if (drawArmedRef.current) return
           map.getCanvas().style.cursor = 'pointer'
         })
         map.on('mouseleave', 'transmission-lines-layer', () => {
+          if (drawArmedRef.current) return
           map.getCanvas().style.cursor = ''
         })
         map.on('click', 'protected-areas-fill', (e) => {
+          if (drawArmedRef.current) return
           const props = e.features[0].properties
           const name = props.Mang_Name || props.MANG_NAME || 'Protected area'
           new maplibregl.Popup()
@@ -292,7 +479,17 @@ export default function MapView() {
 
     map.on('style.load', addOverlaySourcesAndLayers)
 
-    return () => map.remove()
+    return () => {
+      map.remove()
+      // The guard above is keyed to *this* map instance, but the ref
+      // outlives it. React 18's StrictMode mounts, unmounts, and remounts
+      // effects in development, so without this reset the second map would
+      // see handlersBoundRef already true and never bind its click/hover
+      // handlers — transmission-line and protected-area popups silently
+      // stopped working under `npm run dev` (production, which mounts once,
+      // was unaffected).
+      handlersBoundRef.current = false
+    }
   }, [])
 
   useEffect(() => {
@@ -313,26 +510,28 @@ export default function MapView() {
     map.setLayoutProperty('protected-areas-outline', 'visibility', visibility)
   }, [layersVisible.protected])
 
-  // deck.gl layers: only the single active score layer is ever rendered —
-  // the three score layers would occlude each other anyway, and this is
-  // what lets each one have its own symbology + histogram (L2/L4/T3) below.
+  // deck.gl layers: the single active score layer, plus the AOI rectangle(s)
+  // on top. Only one score layer is ever rendered — the three baked ones
+  // would occlude each other anyway, and this is what lets each have its own
+  // symbology + histogram (L2/L4/T3).
+  //
+  // MapboxOverlay.setProps({layers}) replaces the whole array, so the AOI
+  // outline has to be composed into the same call rather than pushed
+  // separately.
   useEffect(() => {
     if (!overlayRef.current) return
 
-    if (!activeRasterLayer) {
-      overlayRef.current.setProps({ layers: [] })
-      return
-    }
+    const layers = []
 
-    const config = RASTER_CONFIG[activeRasterLayer]
-    const symbology = symbologyByLayer[activeRasterLayer]
-    const range = rangeByLayer[activeRasterLayer]
-
-    overlayRef.current.setProps({
-      layers: [
+    const config = activeRasterLayer ? RASTER_CONFIG[activeRasterLayer] : null
+    const data = config ? (config.path ?? liveGeojson) : null
+    if (config && data) {
+      const symbology = symbologyByLayer[activeRasterLayer]
+      const range = rangeByLayer[activeRasterLayer]
+      layers.push(
         new GeoJsonLayer({
           id: `${activeRasterLayer}-score`,
-          data: config.path,
+          data,
           filled: true,
           stroked: false,
           getFillColor: (f) => {
@@ -341,19 +540,72 @@ export default function MapView() {
             const color = colorForScore(score, symbology.ramp, symbology.opacity)
             return inRange ? color : [color[0], color[1], color[2], 12]
           },
-          pickable: true,
+          // Hover tooltips would otherwise fire under the crosshair while
+          // the user is dragging out a rectangle.
+          pickable: !drawArmed,
           updateTriggers: {
             getFillColor: [symbology.ramp, symbology.opacity, range.min, range.max],
           },
-        }),
-      ],
-    })
-  }, [activeRasterLayer, symbologyByLayer, rangeByLayer])
+        })
+      )
+    }
+
+    const aoiColors = AOI_COLORS[theme]
+    layers.push(
+      new PolygonLayer({
+        id: 'aoi-rect',
+        data: [{ ring: bboxToRing(aoi) }],
+        getPolygon: (d) => d.ring,
+        filled: true,
+        stroked: true,
+        getFillColor: aoiColors.fill,
+        getLineColor: aoiColors.line,
+        getLineWidth: 2,
+        lineWidthUnits: 'pixels',
+        pickable: false,
+        updateTriggers: { getFillColor: [theme], getLineColor: [theme] },
+      })
+    )
+
+    if (draftAoi) {
+      layers.push(
+        new PolygonLayer({
+          id: 'aoi-draft',
+          data: [{ ring: bboxToRing(draftAoi) }],
+          getPolygon: (d) => d.ring,
+          filled: true,
+          stroked: true,
+          getFillColor: [aoiColors.draft[0], aoiColors.draft[1], aoiColors.draft[2], 30],
+          getLineColor: aoiColors.draft,
+          getLineWidth: 2,
+          lineWidthUnits: 'pixels',
+          pickable: false,
+          updateTriggers: { getFillColor: [theme], getLineColor: [theme] },
+        })
+      )
+    }
+
+    overlayRef.current.setProps({ layers })
+  }, [
+    activeRasterLayer,
+    symbologyByLayer,
+    rangeByLayer,
+    liveGeojson,
+    aoi,
+    draftAoi,
+    drawArmed,
+    theme,
+  ])
 
   const activeConfig = activeRasterLayer ? RASTER_CONFIG[activeRasterLayer] : null
   const activeSymbology = activeRasterLayer ? symbologyByLayer[activeRasterLayer] : null
   const activeRange = activeRasterLayer ? rangeByLayer[activeRasterLayer] : null
   const activeFeatures = activeRasterLayer ? featuresByLayer[activeRasterLayer] : null
+
+  // The live layer only becomes selectable once a run has produced one.
+  const radioLayers = RASTER_IDS.filter(
+    (id) => id !== LIVE_LAYER_ID || featuresByLayer[LIVE_LAYER_ID] !== null
+  ).map((id) => ({ id, label: RASTER_CONFIG[id].label }))
 
   const rasterControls = activeRasterLayer && (
     <div style={{ marginTop: 4 }}>
@@ -441,8 +693,29 @@ export default function MapView() {
         </div>
       </div>
 
+      <AnalysisPanel
+        aoi={aoi}
+        draftAoi={draftAoi}
+        isPilotAoi={isPilotAoi}
+        drawArmed={drawArmed}
+        onToggleDraw={toggleDraw}
+        onResetAoi={resetAoi}
+        slopeMaxDeg={slopeMaxDeg}
+        onSlopeMaxDegChange={setSlopeMaxDeg}
+        slopeWeight={slopeWeight}
+        onSlopeWeightChange={setSlopeWeight}
+        resolution={resolution}
+        onResolutionChange={setResolution}
+        onRun={runAnalysis}
+        onCancel={cancelAnalysis}
+        status={status}
+        elapsedSec={elapsedSec}
+        apiOnline={apiOnline}
+        paramsDirty={paramsDirty}
+      />
+
       <LayersPanel
-        radioLayers={RASTER_IDS.map((id) => ({ id, label: RASTER_CONFIG[id].label }))}
+        radioLayers={radioLayers}
         activeRadioId={activeRasterLayer}
         onRadioChange={setActiveRasterLayer}
         checkboxLayers={[
