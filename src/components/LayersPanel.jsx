@@ -11,6 +11,8 @@
 // pressed into the track when idle) borrowed from another project's
 // glassmorphism system. See src/styles/glass.css for the token set.
 
+import PanelShell from './PanelShell.jsx'
+
 export default function LayersPanel({
   radioLayers,
   activeRadioId,
@@ -18,22 +20,24 @@ export default function LayersPanel({
   checkboxLayers,
   onToggle,
   extra,
+  collapsed,
+  onToggleCollapse,
 }) {
-  return (
-    <div
-      className="glass-panel"
-      style={{
-        position: 'absolute',
-        top: 12,
-        left: 12,
-        color: '#e6e8eb',
-        padding: '14px 14px 16px',
-        minWidth: 260,
-        maxWidth: 300,
-      }}
-    >
-      <div className="glass-title">Layers</div>
+  // Collapsed, the header still names the layer that's actually drawn on the
+  // map — otherwise folding the panel away loses the one piece of context you
+  // need to read what you're looking at.
+  const activeLabel = radioLayers?.find((l) => l.id === activeRadioId)?.label
 
+  return (
+    <PanelShell
+      title="Layers"
+      collapsed={collapsed}
+      onToggleCollapse={onToggleCollapse}
+      collapsedBadge={activeLabel}
+      position={{ top: 12, left: 12 }}
+      width={276}
+      maxHeight="calc(100% - 24px)"
+    >
       {radioLayers && radioLayers.length > 0 && (
         <div style={{ marginBottom: 10 }}>
           <div className="glass-section-label">Score layer (one at a time)</div>
@@ -79,6 +83,6 @@ export default function LayersPanel({
       )}
 
       {extra}
-    </div>
+    </PanelShell>
   )
 }

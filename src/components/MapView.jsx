@@ -15,6 +15,7 @@ import {
 } from '../lib/bboxDraw.js'
 import { analyze, checkHealth } from '../lib/api.js'
 import { readUrlState, writeUrlState } from '../lib/urlState.js'
+import { usePanelCollapse } from '../lib/usePanelCollapse.js'
 
 // Basemap styles. "streets" has a dark and a light variant so it tracks
 // the UI theme (light UI over the dark vector basemap looked mismatched);
@@ -153,6 +154,11 @@ export default function MapView() {
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const overlayRef = useRef(null)
+
+  // Both floating panels fold away, remembered per-browser. Not in the URL —
+  // see usePanelCollapse.js for why.
+  const [layersCollapsed, toggleLayersCollapsed] = usePanelCollapse('layers')
+  const [analysisCollapsed, toggleAnalysisCollapsed] = usePanelCollapse('analysis')
 
   // Independently toggleable vector overlays.
   const [layersVisible, setLayersVisible] = useState({ lines: true, protected: true })
@@ -813,6 +819,8 @@ export default function MapView() {
         elapsedSec={elapsedSec}
         apiOnline={apiOnline}
         paramsDirty={paramsDirty}
+        collapsed={analysisCollapsed}
+        onToggleCollapse={toggleAnalysisCollapsed}
       />
 
       <LayersPanel
@@ -825,6 +833,8 @@ export default function MapView() {
         ]}
         onToggle={toggleLayer}
         extra={rasterControls}
+        collapsed={layersCollapsed}
+        onToggleCollapse={toggleLayersCollapsed}
       />
     </div>
   )

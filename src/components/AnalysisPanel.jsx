@@ -14,6 +14,7 @@
 // timer, and the "parameters changed since last run" hint.
 
 import { useState } from 'react'
+import PanelShell from './PanelShell.jsx'
 import { MAX_AOI_DEG2, bboxAreaDeg2, formatBbox } from '../lib/bboxDraw.js'
 import { currentShareUrl } from '../lib/urlState.js'
 
@@ -93,6 +94,8 @@ export default function AnalysisPanel({
   elapsedSec,
   apiOnline,
   paramsDirty,
+  collapsed,
+  onToggleCollapse,
 }) {
   // While a drag is in progress the readout follows the draft rectangle
   // rather than the committed AOI. That's not just cosmetic: the sq° figure
@@ -126,22 +129,32 @@ export default function AnalysisPanel({
     }
   }
 
-  return (
-    <div
-      className="glass-panel"
-      style={{
-        position: 'absolute',
-        top: 192,
-        right: 12,
-        color: 'var(--cream)',
-        padding: '14px 14px 16px',
-        width: 264,
-        maxHeight: 'calc(100% - 210px)',
-        overflowY: 'auto',
-      }}
-    >
-      <div className="glass-title">Analysis</div>
+  // A run keeps going while the panel is folded away, and so does a failure.
+  // Surfacing both in the collapsed header is the difference between "I
+  // collapsed this" and "I lost track of it".
+  const collapsedBadge = running ? (
+    <>
+      <span className="analysis-spinner" />
+      {elapsedSec}s
+    </>
+  ) : status.state === 'error' ? (
+    <span style={{ color: '#f87171' }}>failed</span>
+  ) : apiOnline === false ? (
+    <span style={{ color: '#f87171' }}>API offline</span>
+  ) : status.state === 'done' ? (
+    `${status.meanScore} mean`
+  ) : null
 
+  return (
+    <PanelShell
+      title="Analysis"
+      collapsed={collapsed}
+      onToggleCollapse={onToggleCollapse}
+      collapsedBadge={collapsedBadge}
+      position={{ top: 192, right: 12 }}
+      width={264}
+      maxHeight="calc(100% - 210px)"
+    >
       {apiOnline === false && (
         <div className="analysis-status analysis-status--error" style={{ marginBottom: 10 }}>
           API not reachable. Start it with <code>uvicorn main:app --port 8000</code> in{' '}
@@ -294,6 +307,6 @@ export default function AnalysisPanel({
       <div className="analysis-status-note" style={{ marginTop: 4 }}>
         The URL holds the AOI and every parameter above.
       </div>
-    </div>
+    </PanelShell>
   )
 }
