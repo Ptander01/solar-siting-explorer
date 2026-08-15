@@ -67,7 +67,7 @@ flowchart LR
   end
 
   subgraph api["api container — FastAPI"]
-    ANALYZE["POST /analyze<br/>run_analysis()"]
+    ANALYZE["POST /analyze — run_analysis()<br/>GET /context — map features"]
     CACHE[("DEM tile cache<br/>named volume")]
   end
 
@@ -78,8 +78,8 @@ flowchart LR
     PADUS["PAD-US<br/>ArcGIS REST"]
   end
 
-  UI -->|"pre-baked layers"| STATIC
-  UI -->|"live runs"| PROXY --> ANALYZE
+  UI -->|"combined layer, once"| STATIC
+  UI -->|"live runs + map context"| PROXY --> ANALYZE
   ANALYZE <--> CACHE
   ANALYZE --> SRTM & WC & HIFLD & PADUS
   BATCH["pipeline/regenerate_baked_layers.py"] -->|"imports run_analysis()"| ANALYZE
@@ -158,6 +158,10 @@ marked SUPERSEDED and encode an older methodology.
   so the AOI's shape stays legible. Click the same selection again to clear.
 - **Copy link to this analysis** puts the AOI and every parameter in the URL.
   Reopening it restores the study area and zooms the map to it.
+- **Both panels collapse** to a header via the chevron, remembered per browser.
+  A folded Analysis panel still reports a run in progress and its result.
+- **Everything is keyboard operable.** The score layers are a radiogroup
+  (arrow keys, Home/End); layer toggles and mode switches are buttons.
 
 ## API
 
@@ -184,6 +188,14 @@ per-criterion values behind it (`slope_score`, `landcover_score`,
 how many lines and protected areas were found, the excluded-cell count and the
 mean score.
 
+`GET /api/context?bbox=w,s,e,n` returns the transmission lines and protected
+areas for a map window — display only, no scoring, so it answers in about a
+second. The frontend calls it as you pan, which is what makes drawing a study
+area outside the pilot area useful: the infrastructure the score is measured
+against is actually on screen. It reuses the same ArcGIS queries and the same
+10 km padding as the scoring path, so what's drawn is what's measured. Windows
+above 6 sq° are rejected; the frontend also refuses below zoom 8.
+
 `GET /api/health` → `{"status": "ok"}`.
 
 Errors are FastAPI `{"detail": "..."}`: `400` for a bad or oversized AOI,
@@ -203,7 +215,10 @@ backend/
 pipeline/
   regenerate_baked_layers.py   canonical: rebuilds public/data/ via run_analysis()
   m3_/m5_/t_/t3_               SUPERSEDED; kept as build history
-public/data/      pre-baked GeoJSON the frontend loads on first paint
+public/data/      pre-baked GeoJSON. The app downloads only
+                  suitability_score.geojson and derives the criterion layers
+                  from its sub-score columns; the standalone criterion files
+                  are written for direct use (QGIS et al.), not for the app
 nginx.conf        static serving + /api proxy for the web image
 ```
 
@@ -228,8 +243,8 @@ explainable, not calibrated against anything.
 
 **Known limitations.** SRTM's 30m is coarse next to USGS 3DEP for most of the
 US. AOIs are capped at 1 square degree because the grid-averaging step is an
-O(rows × cols) Python loop. The custom pill and checkbox controls are
-mouse-only — they need proper roles and keyboard handling.
+O(rows × cols) Python loop. Map browsing outside the pilot area needs the API
+running, since that's where the infrastructure overlays come from.
 
 ## Data sources
 

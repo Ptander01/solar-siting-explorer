@@ -103,6 +103,15 @@ MAX_AOI_DEG2 = 1.0
 # frontend also refuses to ask below a zoom floor.
 MAX_CONTEXT_DEG2 = 6.0
 
+# Decimal places kept on output grid-cell coordinates. Six is ~10 cm at this
+# latitude, against grid cells ~210 m across — so this is lossless in every
+# sense that matters, and it is not a micro-optimization: numpy's linspace
+# produces values like -97.04756944444445, and at 17,280 cells x 5 corners
+# that repr alone was most of a 9 MB GeoJSON file. Rounding the grid edges
+# (rather than the finished geometries) also makes adjacent cells share
+# byte-identical edge coordinates instead of near-misses.
+COORD_DECIMALS = 6
+
 # C1 — where fetched SRTM tiles live between requests. Overridable so the
 # container can mount a volume at a known path (see docker-compose.yml);
 # defaults under the system temp dir so a bare `uvicorn main:app` still works
@@ -409,8 +418,11 @@ def _grid_cells(arrays, landcover_codes_arr, transform, bbox, grid_cols, grid_ro
     the same objects rather than recomputing anything.
     """
     west, south, east, north = bbox
-    lon_edges = np.linspace(west, east, grid_cols + 1)
-    lat_edges = np.linspace(south, north, grid_rows + 1)
+    # Rounded here, at the source, so every consumer benefits: the pre-baked
+    # files the browser downloads on first paint and the live /analyze
+    # response both shrink, with no change to the frontend.
+    lon_edges = np.round(np.linspace(west, east, grid_cols + 1), COORD_DECIMALS)
+    lat_edges = np.round(np.linspace(south, north, grid_rows + 1), COORD_DECIMALS)
     any_arr = next(iter(arrays.values()))
 
     rows_out = []

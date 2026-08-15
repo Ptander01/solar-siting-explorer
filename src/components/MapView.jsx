@@ -106,6 +106,37 @@ const RASTER_CONFIG = {
 const RASTER_IDS = Object.keys(RASTER_CONFIG)
 const BAKED_RASTER_IDS = RASTER_IDS.filter((id) => RASTER_CONFIG[id].path)
 
+// Every criterion layer is the combined layer with a different column
+// promoted to `score` — and the combined layer already carries all three
+// sub-scores on every cell. Downloading the criterion files separately meant
+// fetching the same 17,280 geometries four times over, about 30 MB to say
+// what 7.6 MB already said.
+//
+// So they're derived in the browser instead. The files are still written by
+// regenerate_baked_layers.py and still in the repo — they're genuinely useful
+// to open in QGIS — the app just no longer pays to download them, and they're
+// kept as a fallback for data baked before the sub-scores existed.
+const DERIVED_FROM = {
+  slope: 'slope_score',
+  landcover: 'landcover_score',
+  transmission: 'transmission_score',
+}
+const PRIMARY_BAKED_ID = 'suitability'
+
+function deriveLayer(features, field) {
+  return {
+    type: 'FeatureCollection',
+    // Geometry objects are shared by reference, not copied — this runs over
+    // ~17k features and the geometry is exactly what we're avoiding
+    // duplicating in the first place.
+    features: features.map((f) => ({
+      type: 'Feature',
+      geometry: f.geometry,
+      properties: { ...f.properties, score: f.properties[field] },
+    })),
+  }
+}
+
 // Intended paint order, bottom to top:
 //
 //   basemap  <  score raster (deck)  <  protected-area fill  <  outline
@@ -295,13 +326,76 @@ export default function MapView() {
     transmission: null,
     [LIVE_LAYER_ID]: null,
   })
+  // GeoJSON handed straight to deck for layers whose data lives in memory —
+  // the live analysis result and the derived criterion layers.
+  const [geojsonByLayer, setGeojsonByLayer] = useState({})
+
   useEffect(() => {
-    BAKED_RASTER_IDS.forEach((id) => {
+    // One fetch, not four. The combined layer carries every sub-score, so the
+    // criterion layers are projected from it rather than downloaded.
+    let cancelled = false
+
+    const fetchLayer = (id) =>
       fetch(RASTER_CONFIG[id].path)
-        .then((r) => r.json())
-        .then((geojson) => setFeaturesByLayer((prev) => ({ ...prev, [id]: geojson.features })))
-        .catch(() => setFeaturesByLayer((prev) => ({ ...prev, [id]: [] })))
+        .then((r) => {
+          if (!r.ok) throw new Error(String(r.status))
+          return r.json()
+        })
+        .then((geojson) => {
+          if (cancelled) return geojson
+          setFeaturesByLayer((prev) => ({ ...prev, [id]: geojson.features }))
+          // Hand deck the parsed object rather than leaving it to fetch the
+          // same URL again. deck.gl resolves a string `data` prop by fetching
+          // it itself, so passing the path meant every baked layer was
+          // downloaded and parsed twice — once here for the histogram, once
+          // by deck for the geometry.
+          setGeojsonByLayer((prev) => ({ ...prev, [id]: geojson }))
+          return geojson
+        })
+        .catch(() => {
+          if (!cancelled) setFeaturesByLayer((prev) => ({ ...prev, [id]: [] }))
+          return null
+        })
+
+    fetchLayer(PRIMARY_BAKED_ID).then((combined) => {
+      if (cancelled || !combined) return
+      const sample = combined.features?.[0]?.properties ?? {}
+      const derivable = Object.entries(DERIVED_FROM).filter(
+        ([, field]) => typeof sample[field] === 'number'
+      )
+
+      if (derivable.length) {
+        const derived = {}
+        const feats = {}
+        for (const [id, field] of derivable) {
+          derived[id] = deriveLayer(combined.features, field)
+          feats[id] = derived[id].features
+        }
+        setGeojsonByLayer((prev) => ({ ...prev, ...derived }))
+        setFeaturesByLayer((prev) => ({ ...prev, ...feats }))
+      }
+
+      // Anything not derivable — data baked before the sub-scores existed —
+      // falls back to its own file, fetched only once the map is idle.
+      const missing = BAKED_RASTER_IDS.filter(
+        (id) => id !== PRIMARY_BAKED_ID && !derivable.some(([d]) => d === id)
+      )
+      if (!missing.length) return
+      const whenIdle = (fn) =>
+        typeof window.requestIdleCallback === 'function'
+          ? window.requestIdleCallback(fn, { timeout: 4000 })
+          : setTimeout(fn, 1200)
+      whenIdle(() =>
+        missing.reduce(
+          (chain, id) => chain.then(() => (cancelled ? null : fetchLayer(id))),
+          Promise.resolve()
+        )
+      )
     })
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   // ── B2: AOI state ──────────────────────────────────────────────────────
@@ -355,10 +449,6 @@ export default function MapView() {
   const [elapsedSec, setElapsedSec] = useState(0)
   const [apiOnline, setApiOnline] = useState(null) // null = not checked yet
   const abortRef = useRef(null)
-
-  // The GeoJSON object handed straight to deck.gl for the live layer (the
-  // baked layers pass a URL string instead and let deck.gl fetch it).
-  const [liveGeojson, setLiveGeojson] = useState(null)
 
   // Signature of the inputs the last successful run used, so the panel can
   // say "parameters changed — re-run" instead of silently showing a live
@@ -519,7 +609,7 @@ export default function MapView() {
       }
 
       setFeaturesByLayer((prev) => ({ ...prev, [LIVE_LAYER_ID]: features }))
-      setLiveGeojson(geojson)
+      setGeojsonByLayer((prev) => ({ ...prev, [LIVE_LAYER_ID]: geojson }))
       // A fresh result invalidates any select-by-score filter carried over
       // from the previous run — its score range may not even overlap.
       updateRange(LIVE_LAYER_ID, { min: 0, max: 100 })
@@ -783,7 +873,13 @@ export default function MapView() {
     const layers = []
 
     const config = activeRasterLayer ? RASTER_CONFIG[activeRasterLayer] : null
-    const data = config ? (config.path ?? liveGeojson) : null
+    // Always in-memory GeoJSON, never a URL. Handing deck a string `data`
+    // prop makes it fetch that URL itself, which raced the fetch this
+    // component already does for the histogram — the same multi-MB file
+    // downloaded and parsed twice on every page load. Until the data is in
+    // hand there's simply no layer to draw, which is correct: it's still
+    // loading.
+    const data = config ? (geojsonByLayer[activeRasterLayer] ?? null) : null
     if (config && data) {
       const symbology = symbologyByLayer[activeRasterLayer]
       const range = rangeByLayer[activeRasterLayer]
@@ -854,7 +950,7 @@ export default function MapView() {
     activeRasterLayer,
     symbologyByLayer,
     rangeByLayer,
-    liveGeojson,
+    geojsonByLayer,
     aoi,
     draftAoi,
     drawArmed,
