@@ -106,6 +106,34 @@ const RASTER_CONFIG = {
 const RASTER_IDS = Object.keys(RASTER_CONFIG)
 const BAKED_RASTER_IDS = RASTER_IDS.filter((id) => RASTER_CONFIG[id].path)
 
+// Intended paint order, bottom to top:
+//
+//   basemap  <  score raster (deck)  <  protected-area fill  <  outline
+//            <  transmission lines  <  AOI rectangle + draft (deck)
+//
+// Polygons under lines, and the deck raster under both.
+//
+// This has to be stated explicitly rather than left to insertion order.
+// MapboxOverlay in interleaved mode inserts each deck layer into the MapLibre
+// style as a custom layer, but a GeoJsonLayer pointed at a URL only creates
+// that layer once its fetch resolves — so whether the score raster lands
+// above or below the vector layers depends on which network request finishes
+// first. Losing that race is what buried the transmission lines and protected
+// areas under a 67%-opaque score raster: they were present, visible and
+// correctly sourced, just painted over. Every structural assertion passed.
+//
+// The score layer names DECK_SCORE_BEFORE_ID as its `beforeId`, which pins it
+// beneath the vector layers whenever those already exist. When they don't yet,
+// deck appends it on top and the style handler adds them above it moments
+// later — correct either way. The AOI layers get no beforeId, which puts them
+// in deck's "last" layer group, above everything.
+//
+// DECK_SCORE_BEFORE_ID must name the BOTTOM-most vector layer. Naming any
+// other one leaves the raster above everything added before it — which is
+// exactly why the first attempt at this fix brought the protected areas back
+// but left the transmission lines buried.
+const DECK_SCORE_BEFORE_ID = 'protected-areas-fill'
+
 // AOI rectangle colors, per theme. The committed AOI is deliberately
 // achromatic (white on dark, near-black on light) so it doesn't read as
 // another data layer next to the amber transmission lines and green
@@ -174,6 +202,13 @@ export default function MapView() {
   // wipes any sources/layers we added by hand — the 'style.load' handler
   // below re-adds them every time, guarded so it's safe on the very first
   // load too.
+  // True once the MapLibre vector overlays exist in the current style. The
+  // score layer's `beforeId` names one of them, and deck logs an error if it
+  // names a layer that isn't there yet — so the beforeId is withheld until
+  // this flips, and the deck effect re-runs to apply it. Reset on every
+  // setStyle, since that wipes them.
+  const [overlaysReady, setOverlaysReady] = useState(false)
+
   const [basemap, setBasemap] = useState('streets')
   const toggleBasemap = () => setBasemap((b) => (b === 'satellite' ? 'streets' : 'satellite'))
   const handlersBoundRef = useRef(false)
@@ -203,6 +238,8 @@ export default function MapView() {
     const key = basemap === 'satellite' ? 'satellite' : theme === 'light' ? 'streetsLight' : 'streetsDark'
     if (key === activeStyleKeyRef.current) return
     activeStyleKeyRef.current = key
+    // setStyle wipes every source and layer we added by hand.
+    setOverlaysReady(false)
     mapRef.current?.setStyle(BASEMAP_STYLES[key])
   }, [basemap, theme])
 
@@ -486,22 +523,17 @@ export default function MapView() {
     // has to run again every time a new style finishes loading, guarded
     // against re-adding something that's already there.
     function addOverlaySourcesAndLayers() {
-      if (!map.getSource('transmission-lines')) {
-        map.addSource('transmission-lines', {
-          type: 'geojson',
-          data: '/data/transmission_lines.geojson',
-        })
-      }
-      if (!map.getLayer('transmission-lines-layer')) {
-        map.addLayer({
-          id: 'transmission-lines-layer',
-          type: 'line',
-          source: 'transmission-lines',
-          paint: { 'line-color': '#f59e0b', 'line-width': 3 },
-          layout: { visibility: layersVisibleRef.current.lines ? 'visible' : 'none' },
-        })
-      }
+      // Called from several events, some of which fire before the new style
+      // is queryable. Everything below is guarded on existence, so the
+      // duplicate calls are cheap no-ops.
+      if (!map.isStyleLoaded()) return
 
+      // Added bottom-up, and the order matters twice over. Polygons go under
+      // lines — standard cartographic practice, and concretely it stops the
+      // 25%-alpha protected-area fill from washing over the transmission
+      // lines. It also fixes DECK_SCORE_BEFORE_ID's meaning: the score raster
+      // is pinned beneath the *first* of these, so that one has to be the
+      // bottom-most, or the raster slots in above whatever was added earlier.
       if (!map.getSource('protected-areas')) {
         map.addSource('protected-areas', {
           type: 'geojson',
@@ -526,6 +558,26 @@ export default function MapView() {
           layout: { visibility: layersVisibleRef.current.protected ? 'visible' : 'none' },
         })
       }
+
+      if (!map.getSource('transmission-lines')) {
+        map.addSource('transmission-lines', {
+          type: 'geojson',
+          data: '/data/transmission_lines.geojson',
+        })
+      }
+      if (!map.getLayer('transmission-lines-layer')) {
+        map.addLayer({
+          id: 'transmission-lines-layer',
+          type: 'line',
+          source: 'transmission-lines',
+          paint: { 'line-color': '#f59e0b', 'line-width': 3 },
+          layout: { visibility: layersVisibleRef.current.lines ? 'visible' : 'none' },
+        })
+      }
+
+      // Lets the deck effect apply its beforeId now that the target exists.
+      // A no-op re-render on the repeat calls from 'idle'.
+      setOverlaysReady(true)
 
       // Click/hover handlers are bound to the map instance itself (not the
       // style), so they'd stack up if re-registered on every basemap
@@ -562,7 +614,22 @@ export default function MapView() {
       }
     }
 
+    // MapLibre fires 'style.load' only for the *initial* style. setStyle() —
+    // which is what the basemap toggle calls — fires 'styledata' instead,
+    // sometimes before the new style is queryable, followed by 'idle'.
+    // Listening only for 'style.load' meant every basemap switch permanently
+    // dropped the transmission and protected-area layers: the style wipe
+    // removed them and nothing ever added them back. They were still checked
+    // in the panel, which is what made it read as "the layers stopped
+    // rendering" rather than "the basemap button is broken".
+    //
+    // All three are handled. The function is idempotent and guards on
+    // isStyleLoaded(), so whichever fires first in a usable state does the
+    // work and the others no-op. 'idle' is the backstop for the satellite
+    // style, where every 'styledata' arrives too early.
     map.on('style.load', addOverlaySourcesAndLayers)
+    map.on('styledata', addOverlaySourcesAndLayers)
+    map.on('idle', addOverlaySourcesAndLayers)
 
     // C3 — a link carrying an AOI should open looking at it. The map's
     // constructor center/zoom stays pinned to the pilot area (it's the right
@@ -628,6 +695,11 @@ export default function MapView() {
         new GeoJsonLayer({
           id: `${activeRasterLayer}-score`,
           data,
+          // Keeps the score raster beneath the transmission/protected
+          // overlays regardless of which loads first — see the comment on
+          // DECK_SCORE_BEFORE_ID. Withheld until that layer exists, since
+          // deck errors on an unresolvable beforeId.
+          beforeId: overlaysReady ? DECK_SCORE_BEFORE_ID : undefined,
           filled: true,
           stroked: false,
           getFillColor: (f) => {
@@ -691,6 +763,7 @@ export default function MapView() {
     draftAoi,
     drawArmed,
     theme,
+    overlaysReady,
   ])
 
   const activeConfig = activeRasterLayer ? RASTER_CONFIG[activeRasterLayer] : null
