@@ -22,7 +22,7 @@ already-known result (see README.md for what to expect):
 
 import os
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import APIRouter, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -34,6 +34,17 @@ from suitability import (
 )
 
 app = FastAPI(title="Solar Siting Explorer — Suitability API")
+
+# Routes are registered twice: bare, and again under /api.
+#
+# Whether the browser's `/api` prefix survives the trip depends entirely on
+# what sits in front. nginx (docker-compose) and Vite's dev proxy both strip
+# it, so this service sees /analyze. Vercel's multi-service rewrites route
+# /api/* to this service without stripping, so it sees /api/analyze. Serving
+# both is a couple of lines and removes an entire class of "works locally,
+# 404s in production" — which is otherwise a genuinely annoying thing to
+# diagnose, because every other part of the deploy looks correct.
+router = APIRouter()
 
 # In dev and in Docker the browser never makes a cross-origin request at all
 # — it calls the same-origin path /api, which Vite's proxy or nginx forwards
@@ -82,12 +93,12 @@ class AnalyzeRequest(BaseModel):
     grid_rows: int = 120
 
 
-@app.get("/health")
+@router.get("/health")
 def health():
     return {"status": "ok"}
 
 
-@app.get("/context")
+@router.get("/context")
 def context(
     bbox: str = Query(..., description="west,south,east,north in decimal degrees"),
 ):
@@ -112,7 +123,7 @@ def context(
         raise HTTPException(status_code=502, detail=str(e))
 
 
-@app.post("/analyze")
+@router.post("/analyze")
 def analyze(req: AnalyzeRequest):
     try:
         return run_analysis(
@@ -134,3 +145,9 @@ def analyze(req: AnalyzeRequest):
         # Upstream data source (SRTM tile fetch, Planetary Computer search)
         # failed — a 502 (bad gateway) fits better than a generic 500.
         raise HTTPException(status_code=502, detail=str(e))
+
+
+app.include_router(router)
+# The duplicate is kept out of the OpenAPI schema so /docs lists each endpoint
+# once rather than twice.
+app.include_router(router, prefix="/api", include_in_schema=False)

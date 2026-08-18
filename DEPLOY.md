@@ -1,25 +1,68 @@
 # Deploying
 
 Two pieces to place: a static frontend and a containerized Python API. The
-frontend is trivial to host anywhere; the API needs a real container and a
-persistent disk, so it needs somewhere that runs Docker.
+frontend is trivial to host anywhere; the API needs a real runtime with heavy
+geospatial binaries, which is where the interesting constraints are.
 
-Recommended pairing: **Vercel for the frontend, Fly.io for the API.** Vercel
-because the repo is already a Vite app and it matches the rest of the
-portfolio; Fly because it takes a Dockerfile directly, gives a persistent
-volume for the SRTM cache, and scales to zero between visits.
+Two routes, in the order worth trying them:
+
+1. **Vercel alone**, using its multi-service support to host both halves.
+   Simplest by far if it works — one platform, one origin, no CORS, and
+   `vercel.json` in this repo is already configured for it.
+2. **Vercel + Fly.io**, static frontend and the API in a container. More moving
+   parts, but nothing about it is in doubt.
 
 ---
 
-## Decide this first: how the browser reaches the API
+## Route 1 — Vercel, both services
 
-Locally the frontend calls the same-origin path `/api` and something in front
-forwards it — Vite's proxy in dev, nginx in Docker. In a split deploy there is
-no such thing in front, so you have to pick one. **This choice matters more
-than it looks**, because an `/analyze` run legitimately takes 10–30 seconds and
-longer at fine resolution over a fresh area.
+`vercel.json` declares a `frontend` service (Vite, repo root) and a `backend`
+service (`backend/`), with `/api/*` rewritten to the backend and everything
+else to the frontend. Import the repo at [vercel.com/new](https://vercel.com/new),
+pick the **Services** preset, and deploy.
 
-### Option A — point the frontend straight at the API *(recommended)*
+The browser keeps calling the same-origin path `/api`, exactly as in dev and
+Docker, so **no `VITE_API_BASE` and no CORS configuration are needed**.
+
+One routing subtlety is already handled: Vercel's service rewrite forwards
+`/api/analyze` to the backend *without stripping the prefix*, while nginx and
+Vite's dev proxy both strip it. `backend/main.py` registers its routes twice —
+bare and under `/api` — so the service answers either way. Without that you get
+a 404 in production while every other part of the deploy looks correct.
+
+### Three things that could stop this working
+
+Try it, but know the failure signatures rather than guessing at them:
+
+- **Dependency size.** rasterio, geopandas, pyproj, shapely, pandas and numpy
+  come to **~425 MB installed**, most of it bundled GDAL/GEOS/PROJ binaries.
+  Platform size limits are the single most likely thing to reject this deploy.
+  Symptom: the build fails at the packaging step, not at import.
+- **No persistent disk.** The SRTM tile cache falls back to the system temp
+  directory and won't survive between invocations, so every analysis
+  re-downloads its elevation tiles. Not fatal — it's the behaviour from before
+  the cache existed — but it makes repeat runs over one area as slow as the
+  first, which is the case the cache was added for.
+- **Request duration limits.** A fine-grid run over an area whose tiles aren't
+  cached can exceed a minute, and with no persistent cache that's the *normal*
+  case rather than the worst one. Symptom: a gateway timeout while the service
+  is still working fine.
+
+If any of those bite, the frontend service still deploys perfectly — drop the
+`backend` service from `vercel.json`, set `VITE_API_BASE`, and continue with
+Route 2 for the API.
+
+---
+
+## Route 2 — Vercel frontend, Fly.io API
+
+Fly because the API wants two things a serverless platform doesn't give you: a
+real container for the geospatial dependency stack, and a persistent disk for
+the SRTM cache.
+
+### Decide first: how the browser reaches the API
+
+#### Option A — point the frontend straight at the API *(recommended)*
 
 Set `VITE_API_BASE` at build time to the API's URL. The browser then calls the
 Fly host directly, which means CORS applies — hence `SSE_ALLOWED_ORIGINS` on
@@ -39,11 +82,11 @@ Delete `vercel.json`'s `rewrites` block if you go this way.
 long-running request, so there's no proxy timeout to run into. The cost is a
 CORS preflight on each call, which is negligible next to the request itself.
 
-### Option B — proxy `/api` through Vercel
+#### Option B — proxy `/api` through Vercel
 
-Keep the single-origin design: edit `vercel.json` and replace
-`https://REPLACE-ME.fly.dev` with your API host. No CORS config needed at all,
-and the API stays unreachable from other origins.
+Keep the single-origin design: replace `vercel.json`'s service-based rewrites
+with a rewrite to the Fly host. No CORS config needed at all, and the API stays
+unreachable from other origins.
 
 ```jsonc
 "rewrites": [
@@ -61,13 +104,12 @@ safer default for this workload.
 
 ---
 
-## Frontend — Vercel
+### Frontend — Vercel
 
-1. Import the repo at [vercel.com/new](https://vercel.com/new). It should
-   detect Vite; `vercel.json` pins the build command and output directory
-   anyway.
-2. Set `VITE_API_BASE` (Option A) or edit the rewrite destination (Option B).
-3. Deploy.
+1. Import the repo at [vercel.com/new](https://vercel.com/new).
+2. Drop the `backend` service from `vercel.json`, leaving the `frontend` one.
+3. Set `VITE_API_BASE` (Option A) or point the rewrite at Fly (Option B).
+4. Deploy.
 
 The pre-baked layers in `public/data/` ship with the static build, so the map
 renders fully on first paint whether or not the API is awake. Only **Run
@@ -77,7 +119,7 @@ Make sure `public/data/` is committed and current — run
 `python3 pipeline/regenerate_baked_layers.py` before deploying if you've
 changed the methodology or weights.
 
-## API — Fly.io
+### API — Fly.io
 
 ```bash
 cd backend
@@ -107,7 +149,7 @@ Notes:
   which is minor next to the analysis. The frontend's health check may briefly
   report the API offline while it wakes — reloading fixes it.
 
-### Alternatives
+#### Other hosts
 
 **Render** — supports Docker and persistent disks, but disks require a paid
 instance type, and free instances sleep with a longer cold start. Point it at
@@ -116,9 +158,9 @@ instance type, and free instances sleep with a longer cold start. Point it at
 **Railway** — Docker-native and simple, but persistent volumes and pricing
 have changed more than once; check current terms before relying on the cache.
 
-**Anything serverless** (Vercel Functions, Lambda, Cloud Run gen1) — the
-geospatial dependency stack is large and the runs are long. Cloud Run gen2 with
-a mounted volume can work; classic function runtimes are a poor fit.
+**Classic serverless function runtimes** (Lambda, Cloud Run gen1) — the
+dependency stack is far too large and the runs too long. Cloud Run gen2 with a
+mounted volume can work.
 
 ## After deploying
 
@@ -126,9 +168,12 @@ a mounted volume can work; classic function runtimes are a poor fit.
 2. Draw a small AOI and run an analysis. Time it. Then run the **same** AOI
    again — the second run should be noticeably faster, which is the DEM cache
    proving it's mounted correctly. If it isn't, the volume isn't attached.
-3. Copy the share link, open it in a private window, confirm it restores the
+3. **Pan away from Butler County.** Transmission lines and protected areas
+   should load for wherever you are — that's `/context`, and it's the quickest
+   confirmation the API is reachable, since it needs no interaction.
+4. Copy the share link, open it in a private window, confirm it restores the
    study area and parameters.
-4. Update the **Live demo** link in `README.md` and in the portfolio case
+5. Update the **Live demo** link in `README.md` and in the portfolio case
    study.
 
 ## Cost
