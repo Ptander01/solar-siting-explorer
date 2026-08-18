@@ -212,8 +212,42 @@ public/data/      pre-baked GeoJSON. The app downloads only
                   suitability_score.geojson and derives the criterion layers
                   from its sub-score columns; the standalone criterion files
                   are written for direct use (QGIS et al.), not for the app
+tests/
+  e2e/          headless-Chromium suites; real MapLibre + deck.gl, network stubbed
+  backend/      scoring maths against synthetic data with hand-computable answers
 nginx.conf        static serving + /api proxy for the web image
 ```
+
+## Tests
+
+Two suites, no test framework in either — plain scripts that exit non-zero on
+failure, which keeps the dependency surface at `playwright` + `pngjs`.
+**Nothing reaches the network:** the SRTM bucket, Planetary Computer, both
+ArcGIS services and the basemap tiles are all stubbed, so the suites are
+deterministic and run offline.
+
+```bash
+npm run test:api                    # scoring maths, no browser, no network
+
+npm run dev                         # terminal 1
+npm run test:e2e                    # terminal 2
+
+npm run build && npm run preview    # terminal 1
+npm run test:payload                # terminal 2 — needs a production build
+```
+
+`test:payload` runs against `preview` rather than `dev` on purpose: React
+StrictMode double-invokes effects in development, which would double the very
+fetch count that suite exists to assert on.
+
+The one worth reading is **`tests/e2e/render.spec.mjs`, which counts pixels.**
+It exists because of a bug where the transmission and protected-area layers
+were present in the style, marked visible and correctly sourced — and
+invisible, because the score raster painted over them. Every structural
+assertion passed while the map was wrong. The only check that could catch it
+is one that asks how many transmission-amber pixels the map actually drew.
+
+See [`tests/README.md`](tests/README.md) for what each file covers.
 
 ## Methodology notes
 
