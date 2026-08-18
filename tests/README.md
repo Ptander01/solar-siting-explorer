@@ -55,6 +55,17 @@ count that suite exists to assert on.
 | `a11y.spec.mjs` | radiogroup semantics, roving tabindex, focus, symbology washes |
 | `context.spec.mjs` | viewport fetching, debounce, zoom floor |
 | `payload.spec.mjs` | one fetch on first paint, not five |
+| `offline.spec.mjs` | the public demo's no-API state — see below |
+
+### Why `offline.spec.mjs` exists
+
+The deployed demo has no backend, so what a visitor sees when the API is
+absent *is* the product for most people who follow the link. This suite
+asserts that state is deliberate: the notice explains rather than errors, it
+isn't styled as a failure, no doomed requests are made (a frontend-only host
+answers `/api/*` with `index.html` and a 200, so the health check has to
+inspect the body, not the status), and the client-side half — drawing,
+weights, symbology, filtering — still works.
 
 ### Why `render.spec.mjs` counts pixels
 

@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:e2e": "node tests/e2e/analysis.spec.mjs && node tests/e2e/render.spec.mjs && node tests/e2e/tooltip.spec.mjs && node tests/e2e/panels.spec.mjs && node tests/e2e/a11y.spec.mjs && node tests/e2e/context.spec.mjs",
+    "test:e2e": "node tests/e2e/analysis.spec.mjs && node tests/e2e/render.spec.mjs && node tests/e2e/tooltip.spec.mjs && node tests/e2e/panels.spec.mjs && node tests/e2e/a11y.spec.mjs && node tests/e2e/context.spec.mjs && node tests/e2e/offline.spec.mjs",
     "test:payload": "node tests/e2e/payload.spec.mjs",
     "test:api": "backend/venv/bin/python tests/backend/test_scoring.py && backend/venv/bin/python tests/backend/test_context.py && backend/venv/bin/python tests/backend/test_regenerate.py"
   },

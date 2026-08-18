@@ -470,7 +470,11 @@ export default function MapView() {
 
   useEffect(() => {
     const controller = new AbortController()
-    checkHealth(controller.signal).then(setApiOnline)
+    checkHealth(controller.signal).then((online) => {
+      setApiOnline(online)
+      // The layers panel's context note is meaningless without an API.
+      if (!online) setContextNote(null)
+    })
     return () => controller.abort()
   }, [])
 
@@ -497,7 +501,11 @@ export default function MapView() {
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map || apiOnline === false) return
+    // Strictly true, not "not false": apiOnline is null until the health
+    // check answers. Firing on null meant the public demo always made one
+    // doomed request and left a "could not load infrastructure" note behind
+    // it, which is exactly the broken-looking noise this panel should avoid.
+    if (!map || apiOnline !== true) return
 
     let timer = null
     let controller = null

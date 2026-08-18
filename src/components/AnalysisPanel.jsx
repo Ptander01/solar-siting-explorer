@@ -155,10 +155,31 @@ export default function AnalysisPanel({
       width={264}
       maxHeight="calc(100% - 210px)"
     >
+      {/* Not an error state. The analysis backend is a Python service with
+          ~400MB of geospatial native dependencies, a CPU-bound scoring loop
+          and runs measured in tens of seconds — it wants a container with a
+          disk, not a free serverless tier, so the public demo ships without
+          it. Phrased for someone arriving from a portfolio link, who should
+          read this as a deliberate boundary rather than a broken page; the
+          local run instructions stay, in smaller type, for anyone who cloned
+          the repo. */}
       {apiOnline === false && (
-        <div className="analysis-status analysis-status--error" style={{ marginBottom: 10 }}>
-          API not reachable. Start it with <code>uvicorn main:app --port 8000</code> in{' '}
-          <code>backend/</code>, or <code>docker compose up</code>.
+        <div className="analysis-offline">
+          <strong>Live analysis runs locally.</strong> The scoring pipeline is a
+          Python service that isn't deployed with this demo — everything else on
+          this page is real: the pre-computed Butler County layers, the
+          symbology, the histogram filter and the shareable URLs.
+          <div className="analysis-offline-note">
+            You can still draw a study area and set weights here; running it
+            needs the backend.{' '}
+            <a
+              href="https://github.com/Ptander01/solar-siting-explorer"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Run the whole thing with one command →
+            </a>
+          </div>
         </div>
       )}
 
