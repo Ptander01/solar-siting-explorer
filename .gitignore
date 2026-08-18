@@ -15,3 +15,6 @@ tests/artifacts/
 # it in a README, so there's no reason to carry 8 MB in git history.
 docs/screenshots/_*
 docs/screenshots/*.mp4
+
+# scratch files parked here because the Cowork mount cannot unlink
+_to_delete/
