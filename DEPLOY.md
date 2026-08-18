@@ -42,27 +42,43 @@ and must specify an "entrypoint" for runtime "python".
 `vercel.json` sets `"entrypoint": "main.py"` — the path is relative to the
 service `root`, and the file has to expose a module-level `app`.
 
-### Three things that could stop this working
+### This was tried, and it does not work
 
-Try it, but know the failure signatures rather than guessing at them:
+Attempted 2026-08-18. The build succeeds; every request then returns 500,
+including FastAPI's own `/docs`, because the app never finishes importing:
 
-- **Dependency size.** rasterio, geopandas, pyproj, shapely, pandas and numpy
-  come to **~425 MB installed**, most of it bundled GDAL/GEOS/PROJ binaries.
-  Platform size limits are the single most likely thing to reject this deploy.
-  Symptom: the build fails at the packaging step, not at import.
-- **No persistent disk.** The SRTM tile cache falls back to the system temp
-  directory and won't survive between invocations, so every analysis
-  re-downloads its elevation tiles. Not fatal — it's the behaviour from before
-  the cache existed — but it makes repeat runs over one area as slow as the
-  first, which is the case the cache was added for.
-- **Request duration limits.** A fine-grid run over an area whose tiles aren't
-  cached can exceed a minute, and with no persistent cache that's the *normal*
-  case rather than the worst one. Symptom: a gateway timeout while the service
-  is still working fine.
+```
+File "/var/task/suitability.py", line 38, in <module>
+    import rasterio
+ImportError: libexpat.so.1: cannot open shared object file: No such file or directory
+```
 
-If any of those bite, the frontend service still deploys perfectly — drop the
-`backend` service from `vercel.json`, set `VITE_API_BASE`, and continue with
-Route 2 for the API.
+**rasterio's wheel bundles more than twenty native libraries** — GDAL, GEOS,
+PROJ, HDF5, netCDF, libcurl, libpng — but not libexpat, which it expects the
+operating system to provide. Vercel's managed Python runtime image doesn't
+have it, and there is no `apt-get` on a managed runtime to add it.
+
+Note what this is *not*: the build log's "Bundle size (393 MB) exceeds the
+standard size; optimizing dependencies" is a red herring. Size was survivable.
+A missing system library was not.
+
+This is the same class of problem as the `elevation` package needing
+system GDAL command-line tools back in M3 (see the root README). Geospatial
+Python keeps a large native surface underneath the Python API, and it leaks
+through wherever the environment is not fully under your control. That is the
+argument for a container, and it is why Route 2 exists.
+
+Two other things would have bitten even if the import had worked, both solved
+by a container as well:
+
+- **No persistent disk.** The SRTM tile cache would fall back to the system
+  temp directory and not survive between invocations, so every analysis
+  re-downloads its elevation tiles — the exact case the cache was added for.
+- **Request duration limits.** A fine-grid run over uncached tiles can exceed a
+  minute, and with no persistent cache that is the normal case rather than the
+  worst one.
+
+**Use Route 2.** `vercel.json` is now frontend-only.
 
 ---
 

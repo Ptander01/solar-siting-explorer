@@ -31,8 +31,17 @@ async function errorDetail(res) {
 export async function checkHealth(signal) {
   try {
     const res = await fetch(`${API_BASE}/health`, { signal })
-    return res.ok
+    if (!res.ok) return false
+    // Checking the body, not just the status, matters more than it looks.
+    // On a frontend-only deploy there is no API behind /api, so the SPA
+    // catch-all rewrite answers /api/health with index.html and a cheerful
+    // 200. Trusting res.ok alone would report the API online, hide the
+    // "not reachable" warning, and let Run analysis fail later with
+    // something far more confusing than the truth.
+    const body = await res.json()
+    return body?.status === 'ok'
   } catch {
+    // Non-JSON body, network failure, or an aborted check.
     return false
   }
 }
