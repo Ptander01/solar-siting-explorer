@@ -9,3 +9,9 @@ pipeline/venv/
 __pycache__/
 *.pyc
 tests/artifacts/
+
+# Scratch frames from building the demo GIF, and the MP4 — that one is for the
+# portfolio site and LinkedIn, where a real player exists. GitHub won't render
+# it in a README, so there's no reason to carry 8 MB in git history.
+docs/screenshots/_*
+docs/screenshots/*.mp4

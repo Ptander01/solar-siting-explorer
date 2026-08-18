@@ -10,16 +10,9 @@ Built to close a specific skill gap — modern open-source web mapping — on to
 of an existing Python/ArcGIS geospatial background. The analysis stays in
 Python; the JavaScript renders it.
 
-<!--
-  SCREENSHOTS — add three PNGs to docs/screenshots/ and uncomment this block:
-    01-overview.png   the pilot AOI with the suitability layer + both panels
-    02-draw.png       mid-drag, the draft rectangle visible over the map
-    03-live.png       a completed live run, live layer selected, status showing
-  A short screen recording of draw → run → result is worth more than all three;
-  drop it in as docs/screenshots/demo.gif and lead with it.
+![Switching between the suitability, slope and land-cover surfaces, with the hover tooltip showing the raw inputs behind a cell's score](docs/screenshots/demo.gif)
 
-![Suitability layer over the pilot AOI](docs/screenshots/01-overview.png)
--->
+*Switching between the combined suitability surface and the individual criteria, each with its own colour ramp; hovering a cell shows the slope, land-cover class and distance to transmission it was scored from.*
 
 ## What it computes
 
