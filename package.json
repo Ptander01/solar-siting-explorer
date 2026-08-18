@@ -6,21 +6,26 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e": "node tests/e2e/analysis.spec.mjs && node tests/e2e/render.spec.mjs && node tests/e2e/tooltip.spec.mjs && node tests/e2e/panels.spec.mjs && node tests/e2e/a11y.spec.mjs && node tests/e2e/context.spec.mjs",
+    "test:payload": "node tests/e2e/payload.spec.mjs",
+    "test:api": "backend/venv/bin/python tests/backend/test_scoring.py && backend/venv/bin/python tests/backend/test_context.py && backend/venv/bin/python tests/backend/test_regenerate.py"
   },
   "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "maplibre-gl": "^4.7.1",
+    "@deck.gl/aggregation-layers": "^9.0.0",
     "@deck.gl/core": "^9.0.0",
     "@deck.gl/layers": "^9.0.0",
-    "@deck.gl/aggregation-layers": "^9.0.0",
     "@deck.gl/mapbox": "^9.0.0",
     "framer-motion": "^11.11.0",
+    "maplibre-gl": "^4.7.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "recharts": "^2.12.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
+    "playwright": "^1.56.0",
+    "pngjs": "^7.0.0",
     "vite": "^5.4.0"
   }
 }

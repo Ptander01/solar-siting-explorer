@@ -8,3 +8,4 @@ backend/venv/
 pipeline/venv/
 __pycache__/
 *.pyc
+tests/artifacts/

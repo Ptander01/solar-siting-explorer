@@ -7,6 +7,10 @@ dist/
 .git/
 .gitignore
 
+# Never executed inside the image, and the e2e suites drive a browser against
+# a running server rather than anything in the build.
+tests/
+
 # The Python side has its own build context (backend/), so it doesn't belong
 # in the frontend image at all.
 backend/

@@ -13,6 +13,11 @@ WORKDIR /app
 # developed against; npm ci is the reproducible install (and errors out
 # rather than silently drifting if the lockfile is stale).
 COPY package.json package-lock.json ./
+# The test suites bring in Playwright as a devDependency, and `npm ci` installs
+# devDependencies because the Vite build needs them. Without this, Playwright's
+# postinstall would pull several hundred MB of browsers into a build stage that
+# never runs a test.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN npm ci
 COPY . .
 RUN npm run build
