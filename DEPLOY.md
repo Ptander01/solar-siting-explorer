@@ -30,6 +30,18 @@ Vite's dev proxy both strip it. `backend/main.py` registers its routes twice —
 bare and under `/api` — so the service answers either way. Without that you get
 a 404 in production while every other part of the deploy looks correct.
 
+The `backend` service must declare an **`entrypoint`**. Vercel detects FastAPI
+from `requirements.txt` but will not guess which file holds the ASGI app, and
+without it the build fails immediately with:
+
+```
+Error: Service "backend" detected framework "fastapi" in "backend"
+and must specify an "entrypoint" for runtime "python".
+```
+
+`vercel.json` sets `"entrypoint": "main.py"` — the path is relative to the
+service `root`, and the file has to expose a module-level `app`.
+
 ### Three things that could stop this working
 
 Try it, but know the failure signatures rather than guessing at them:
