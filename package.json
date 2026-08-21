@@ -16,6 +16,7 @@
     "@deck.gl/core": "^9.0.0",
     "@deck.gl/layers": "^9.0.0",
     "@deck.gl/mapbox": "^9.0.0",
+    "@vercel/analytics": "^2.0.1",
     "framer-motion": "^11.11.0",
     "maplibre-gl": "^4.7.1",
     "react": "^18.3.1",
